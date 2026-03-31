@@ -2,13 +2,16 @@
  * Attention Type — generative 0/1 letterforms on a single ATTENTION axis (100 → 0).
  */
 
+/** SF Mono on Apple; ui-monospace / Menlo / Monaco / Consolas elsewhere (not web-hosted). */
+const MONO_FONT_P5 = "SF Mono, Menlo, Monaco, Consolas, monospace";
+const MONO_FONT_CANVAS = '"SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace';
+
 let attentionInput;
 /** Raw typed text (newlines = manual line breaks; width-wrap still applies per block). */
-const PLACEHOLDER_PHRASE = "pay attention to me!";
+const PLACEHOLDER_PHRASE = "Pay Attention to Me!";
 let phraseBuffer = PLACEHOLDER_PHRASE;
 /** Until first click or key, show placeholder; then clear and show caret. */
 let awaitingFirstEdit = true;
-let stateEl;
 let fontReady = false;
 /** Canvas DOM node — focus checks and caret blink. */
 let phraseCanvasElt = null;
@@ -16,20 +19,28 @@ let caretBlinkId = 0;
 let caretBlinkOn = true;
 /** Last wrapped lines + longest row length (mask space), for caret position). */
 let lastLayout = { lines: [""], longestLen: 1 };
+/** Text selection in phraseBuffer: [start, end) indices; null when collapsed. */
+let phraseSelection = null;
 
 /**
  * Fixed mask resolution per character (like a tile grid / pixel font).
  * Phrase length only grows the canvas; each letter keeps the same sampling density.
  */
-/** Per-character mask raster — CELL_W sets horizontal letter spacing (narrower = tighter). */
-const CELL_W = 108;
-const CELL_H = 156;
-const MASK_CHAR_TEXT_SIZE = Math.min(CELL_H * 0.76, CELL_W * 0.78);
+/** Width of each character’s mask tile — sets drawn glyph size (independent of spacing). */
+const MASK_CELL_W = 80;
+/**
+ * Horizontal advance between character origins (left edges) in mask space.
+ * Smaller than MASK_CELL_W tightens letter gaps without shrinking the glyph.
+ */
+const CELL_ADVANCE_X = 60;
+const CELL_H = 100;
+const MASK_CHAR_TEXT_SIZE = Math.min(CELL_H * 0.76, MASK_CELL_W * 0.95);
 
 /**
- * Mask sampling stride in pixels. Lower = denser grid (heavier draw loop). 4 vs 3 ≈ 44% fewer glyphs.
+ * Mask sampling stride in pixels. Lower = denser grid (heavier draw loop).
+ * Slightly finer than 4 so smaller on-screen glyphs still read as a rich letterform.
  */
-const MASK_STEP = 4;
+const MASK_STEP = 3;
 /** Include antialiased fringe so letters read solid; lower = denser bits (slightly more draw work). */
 const MASK_LUM_THRESH = 58;
 
@@ -43,11 +54,11 @@ let bits = [];
 let maskBounds = {
   minX: 0,
   minY: 0,
-  maxX: CELL_W,
+  maxX: MASK_CELL_W,
   maxY: CELL_H,
-  cx: CELL_W / 2,
+  cx: MASK_CELL_W / 2,
   cy: CELL_H / 2,
-  spanW: CELL_W,
+  spanW: MASK_CELL_W,
   spanH: CELL_H,
 };
 
@@ -70,18 +81,17 @@ const PHRASE_MAX_LEN = 120;
 /** Extra canvas height so glyphs aren’t hidden under the fixed bottom UI bar. */
 const CANVAS_BOTTOM_UI_CLEAR = 120;
 
+/** On-screen 0/1 size (smaller = more bits, busier letterform). */
+const GLYPH_SIZE_SCALE = 0.58;
+/** Minimum per-glyph opacity at attention 0 (never fully erase the field). */
+const BIT_OPACITY_FLOOR = 0.58;
+
 let phraseDebounceId = 0;
 let redrawRafId = 0;
 let resizeLayoutRafId = 0;
 
 function getAttention() {
   return attentionInput ? Number(attentionInput.value) : 100;
-}
-
-function stateLabel(a) {
-  if (a >= 65) return { name: "PRESENT", range: "100 — 65" };
-  if (a >= 30) return { name: "DISTRACTED", range: "65 — 30" };
-  return { name: "ABSENT", range: "30 — 0" };
 }
 
 function stopCaretBlink() {
@@ -93,58 +103,95 @@ function stopCaretBlink() {
 }
 
 function startCaretBlink() {
-  if (caretBlinkId || awaitingFirstEdit) return;
+  if (caretBlinkId) return;
   caretBlinkId = setInterval(() => {
     caretBlinkOn = !caretBlinkOn;
-    if (!awaitingFirstEdit && phraseCanvasElt && document.activeElement === phraseCanvasElt) {
+    if (!phraseCanvasElt) return;
+    const showPlaceholder = awaitingFirstEdit && bits.length > 0;
+    const showEditCaret = !awaitingFirstEdit && document.activeElement === phraseCanvasElt;
+    if (showPlaceholder || showEditCaret) {
       redraw();
     }
   }, 530);
 }
 
 function schedulePhraseRebuild() {
-  updateStateLabel();
+  updatePresetButtons();
   clearTimeout(phraseDebounceId);
   phraseDebounceId = setTimeout(() => {
     rebuildBits();
     resizeCanvasToContent();
     redraw();
-    if (!awaitingFirstEdit) startCaretBlink();
+    startCaretBlink();
   }, 140);
 }
 
 function dismissPlaceholder() {
   if (!awaitingFirstEdit) return;
   awaitingFirstEdit = false;
+  phraseSelection = null;
   phraseBuffer = "";
   stopCaretBlink();
   clearTimeout(phraseDebounceId);
   phraseDebounceId = 0;
-  updateStateLabel();
+  updatePresetButtons();
   rebuildBits();
   resizeCanvasToContent();
   redraw();
   startCaretBlink();
 }
 
+/**
+ * Keep case, letters, numbers, punctuation, symbols; drop control chars (newlines kept).
+ * Tabs / NBSP normalized to spaces so wrapping and the mask stay consistent.
+ */
 function normalizePhraseBuffer(s) {
   return (s || "")
-    .toUpperCase()
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .replace(/[^A-Z0-9\s\n!]/g, "");
+    .replace(/\t/g, " ")
+    .replace(/\u00A0/g, " ")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+/** True for a single typed character (incl. tab) or one BMP/astral glyph from key events. */
+function isTypedCharacterKey(key) {
+  if (key.length === 1) {
+    const cp = key.codePointAt(0);
+    if (cp === 0x09) return true;
+    if (cp < 0x20 || cp === 0x7f) return false;
+    return true;
+  }
+  if (key.length === 2) {
+    const a = key.charCodeAt(0);
+    const b = key.charCodeAt(1);
+    return a >= 0xd800 && a <= 0xdbff && b >= 0xdc00 && b <= 0xdfff;
+  }
+  return false;
 }
 
 function onPhrasePaste(e) {
   const elt = e.target;
   if (!elt || elt.tagName !== "CANVAS") return;
   e.preventDefault();
+  const t = normalizePhraseBuffer(e.clipboardData.getData("text") || "");
+  if (phraseSelection && phraseSelection.end > phraseSelection.start) {
+    const { start, end } = phraseSelection;
+    const before = phraseBuffer.slice(0, start);
+    const after = phraseBuffer.slice(end);
+    const maxInsert = PHRASE_MAX_LEN - before.length - after.length;
+    phraseBuffer = before + (t.length ? t.slice(0, max(0, maxInsert)) : "") + after;
+    phraseSelection = null;
+    if (awaitingFirstEdit) awaitingFirstEdit = false;
+    stopCaretBlink();
+    schedulePhraseRebuild();
+    return;
+  }
   if (awaitingFirstEdit) {
     awaitingFirstEdit = false;
     phraseBuffer = "";
     stopCaretBlink();
   }
-  const t = normalizePhraseBuffer(e.clipboardData.getData("text") || "");
   if (!t.length) {
     schedulePhraseRebuild();
     return;
@@ -158,30 +205,64 @@ function onPhraseKeydown(e) {
   const elt = e.target;
   if (!elt || elt.tagName !== "CANVAS") return;
 
-  if (awaitingFirstEdit) {
-    if (e.key === "Tab" || e.key === "Escape") return;
-    const willEdit =
-      e.key === "Backspace" ||
-      e.key === "Enter" ||
-      (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey);
-    if (!willEdit) return;
-    awaitingFirstEdit = false;
-    phraseBuffer = "";
-    stopCaretBlink();
+  if ((e.metaKey || e.ctrlKey) && (e.key === "a" || e.key === "A")) {
+    e.preventDefault();
+    e.stopPropagation();
+    phraseSelection = { start: 0, end: phraseBuffer.length };
+    redraw();
+    return;
   }
 
   if (e.key === "Backspace") {
+    e.preventDefault();
+    if (phraseSelection && phraseSelection.end > phraseSelection.start) {
+      phraseBuffer = phraseBuffer.slice(0, phraseSelection.start) + phraseBuffer.slice(phraseSelection.end);
+      phraseSelection = null;
+      if (awaitingFirstEdit && !phraseBuffer.length) {
+        awaitingFirstEdit = false;
+        stopCaretBlink();
+      }
+      schedulePhraseRebuild();
+      return;
+    }
+    phraseSelection = null;
+    if (awaitingFirstEdit) {
+      awaitingFirstEdit = false;
+      phraseBuffer = "";
+      stopCaretBlink();
+    }
     if (!phraseBuffer.length) {
-      e.preventDefault();
       schedulePhraseRebuild();
       return;
     }
     phraseBuffer = phraseBuffer.slice(0, -1);
     schedulePhraseRebuild();
-    e.preventDefault();
     return;
   }
+
+  if (awaitingFirstEdit) {
+    if (e.key === "Tab" || e.key === "Escape") return;
+    const willEdit =
+      e.key === "Enter" ||
+      (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey);
+    if (!willEdit) return;
+    awaitingFirstEdit = false;
+    if (phraseSelection && phraseSelection.end > phraseSelection.start) {
+      const { start, end } = phraseSelection;
+      phraseBuffer = phraseBuffer.slice(0, start) + phraseBuffer.slice(end);
+      phraseSelection = null;
+    } else {
+      phraseBuffer = "";
+    }
+    stopCaretBlink();
+  }
+
   if (e.key === "Enter") {
+    if (phraseSelection && phraseSelection.end > phraseSelection.start) {
+      const { start, end } = phraseSelection;
+      phraseBuffer = phraseBuffer.slice(0, start) + phraseBuffer.slice(end);
+      phraseSelection = null;
+    }
     if (phraseBuffer.length < PHRASE_MAX_LEN) {
       phraseBuffer += "\n";
       schedulePhraseRebuild();
@@ -189,34 +270,49 @@ function onPhraseKeydown(e) {
     e.preventDefault();
     return;
   }
-  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (phraseBuffer.length >= PHRASE_MAX_LEN) return;
-    const k = e.key;
-    if (k === " ") {
-      phraseBuffer += " ";
-      schedulePhraseRebuild();
+  if (e.key === "Delete") {
+    if (phraseSelection && phraseSelection.end > phraseSelection.start) {
       e.preventDefault();
-      return;
-    }
-    if (k === "!") {
-      phraseBuffer += "!";
+      phraseBuffer = phraseBuffer.slice(0, phraseSelection.start) + phraseBuffer.slice(phraseSelection.end);
+      phraseSelection = null;
+      if (awaitingFirstEdit && !phraseBuffer.length) {
+        awaitingFirstEdit = false;
+        stopCaretBlink();
+      }
       schedulePhraseRebuild();
-      e.preventDefault();
-      return;
     }
-    const u = k.toUpperCase();
-    if (/[A-Z0-9]/.test(u)) {
-      phraseBuffer += u;
-      schedulePhraseRebuild();
-      e.preventDefault();
-    }
+    e.preventDefault();
+    return;
   }
+  if (e.key === "Dead" || e.key === "Process") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (!isTypedCharacterKey(e.key)) return;
+  const chunk = normalizePhraseBuffer(e.key);
+  if (!chunk.length) return;
+
+  if (phraseSelection && phraseSelection.end > phraseSelection.start) {
+    const { start, end } = phraseSelection;
+    const before = phraseBuffer.slice(0, start);
+    const after = phraseBuffer.slice(end);
+    const maxInsert = PHRASE_MAX_LEN - before.length - after.length;
+    phraseBuffer = before + chunk.slice(0, max(0, maxInsert)) + after;
+    phraseSelection = null;
+    schedulePhraseRebuild();
+    e.preventDefault();
+    return;
+  }
+
+  if (phraseBuffer.length >= PHRASE_MAX_LEN) return;
+  const room = PHRASE_MAX_LEN - phraseBuffer.length;
+  phraseBuffer += chunk.slice(0, room);
+  schedulePhraseRebuild();
+  e.preventDefault();
 }
 
 function setup() {
   const canvas = createCanvas(max(100, windowWidth), max(100, windowHeight));
   canvas.parent("sketch-host");
-  textFont("Geist Mono, monospace");
+  textFont(MONO_FONT_P5);
 
   const elt = canvas.elt;
   phraseCanvasElt = elt;
@@ -225,37 +321,50 @@ function setup() {
   elt.setAttribute("aria-multiline", "true");
   elt.setAttribute(
     "aria-label",
-    "Click to start typing. Placeholder: pay attention to me. Then letters, numbers, space, exclamation, Enter for new line."
+    "Click to start typing. Placeholder: Pay Attention to Me. Then type letters, numbers, punctuation, symbols, or Enter for a new line."
   );
   elt.style.outline = "none";
   elt.addEventListener("pointerdown", () => {
+    phraseSelection = null;
     if (awaitingFirstEdit) {
       dismissPlaceholder();
     }
     elt.focus();
   });
-  elt.addEventListener("keydown", onPhraseKeydown);
+  elt.addEventListener("keydown", onPhraseKeydown, true);
   elt.addEventListener("paste", onPhrasePaste);
-  elt.addEventListener("blur", () => stopCaretBlink());
+  elt.addEventListener("blur", () => {
+    phraseSelection = null;
+    if (!awaitingFirstEdit) stopCaretBlink();
+  });
   elt.addEventListener("focus", () => {
-    if (!awaitingFirstEdit) startCaretBlink();
+    startCaretBlink();
   });
 
   attentionInput = document.getElementById("attention");
-  stateEl = document.getElementById("state");
 
   attentionInput.addEventListener("input", () => {
-    updateStateLabel();
+    updatePresetButtons();
     scheduleRedraw();
   });
 
-  maskG = createGraphics(CELL_W, CELL_H);
+  document.querySelectorAll(".preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const v = Number(btn.getAttribute("data-attention"));
+      if (!Number.isFinite(v)) return;
+      attentionInput.value = String(constrain(v, 0, 100));
+      attentionInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  });
+
+  maskG = createGraphics(MASK_CELL_W, CELL_H);
   maskG.pixelDensity(1);
   rebuildBits();
   resizeCanvasToContent();
-  updateStateLabel();
+  updatePresetButtons();
   fontReady = true;
   noLoop();
+  startCaretBlink();
 
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => {
@@ -266,10 +375,16 @@ function setup() {
   }
 }
 
-function updateStateLabel() {
+function updatePresetButtons() {
   const a = getAttention();
-  const s = stateLabel(a);
-  stateEl.innerHTML = `<span class="name">${s.name}</span> <span class="val">· ${s.range} · ATTENTION ${a}</span>`;
+  document.querySelectorAll(".preset-btn").forEach((btn) => {
+    const band = btn.getAttribute("data-band");
+    let on = false;
+    if (band === "present") on = a >= 65;
+    else if (band === "distracted") on = a >= 30 && a < 65;
+    else if (band === "absent") on = a < 30;
+    btn.classList.toggle("is-active", on);
+  });
 }
 
 /**
@@ -305,12 +420,17 @@ function wrapParagraphWords(cleaned, maxPerLine) {
 
 /**
  * Split on Enter first, then wrap each block to viewport width (`maxPerLine`).
+ * Leading whitespace is trimmed per block; trailing spaces are kept so the caret advances after a space.
  */
 function wrapPhraseToLines(phrase, maxPerLine) {
   const lines = [];
   for (const block of phrase.split("\n")) {
-    const cleaned = block.replace(/\s+/g, " ").trim();
-    if (cleaned.length) lines.push(...wrapParagraphWords(cleaned, maxPerLine));
+    let cleaned = block.replace(/\s+/g, " ").trimStart();
+    if (!cleaned.length) {
+      if (/\s/.test(block)) cleaned = " ";
+      else continue;
+    }
+    lines.push(...wrapParagraphWords(cleaned, maxPerLine));
   }
   return lines;
 }
@@ -334,19 +454,27 @@ function stableBitKey(row, col, lx, ly) {
   return h >>> 0;
 }
 
-/** Map mask pixel (x,y) to line/col + position inside that character cell (stable across re-centering). */
-function maskCellAt(x, y, lines, longestLen) {
-  const row = floor(y / CELL_H);
-  if (row < 0 || row >= lines.length) return null;
-  const line = lines[row];
-  const offsetX = ((longestLen - line.length) * CELL_W) / 2;
-  const relX = x - offsetX;
-  const col = floor(relX / CELL_W);
-  if (col < 0 || col >= line.length) return null;
-  if (line[col] === " ") return null;
-  const lx = relX - col * CELL_W;
-  const ly = y - row * CELL_H;
-  return { row, col, lx, ly };
+/**
+ * Map mask x (relative to line’s left padding) to column. Overlap only checks ~ceil(W/A) candidates, not full line length.
+ * When multiple tiles cover relX, keep the rightmost (matches draw order).
+ */
+function maskColFromRelX(relX, lineLen) {
+  const A = CELL_ADVANCE_X;
+  const W = MASK_CELL_W;
+  if (lineLen <= 0 || relX < 0) return -1;
+  if (A >= W) {
+    const c = floor(relX / A);
+    if (c < 0 || c >= lineLen) return -1;
+    if (relX >= c * A + W) return -1;
+    return c;
+  }
+  const cLow = max(0, Math.ceil((relX - W) / A));
+  const cHigh = min(lineLen - 1, floor(relX / A));
+  let col = -1;
+  for (let c = cLow; c <= cHigh; c++) {
+    if (relX >= c * A && relX < c * A + W) col = c;
+  }
+  return col;
 }
 
 /**
@@ -360,11 +488,11 @@ function rebuildBits() {
     maskBounds = {
       minX: 0,
       minY: 0,
-      maxX: CELL_W,
+      maxX: MASK_CELL_W,
       maxY: CELL_H,
-      cx: CELL_W / 2,
+      cx: MASK_CELL_W / 2,
       cy: CELL_H / 2,
-      spanW: CELL_W,
+      spanW: MASK_CELL_W,
       spanH: CELL_H,
     };
     return;
@@ -376,11 +504,11 @@ function rebuildBits() {
     maskBounds = {
       minX: 0,
       minY: 0,
-      maxX: CELL_W,
+      maxX: MASK_CELL_W,
       maxY: CELL_H,
-      cx: CELL_W / 2,
+      cx: MASK_CELL_W / 2,
       cy: CELL_H / 2,
-      spanW: CELL_W,
+      spanW: MASK_CELL_W,
       spanH: CELL_H,
     };
     return;
@@ -388,7 +516,7 @@ function rebuildBits() {
 
   const longestLen = Math.max(...lines.map((ln) => ln.length), 1);
   lastLayout = { lines: lines.slice(), longestLen };
-  const maskW = longestLen * CELL_W;
+  const maskW = (longestLen - 1) * CELL_ADVANCE_X + MASK_CELL_W;
   const maskH = lines.length * CELL_H;
 
   ensureMaskGraphics(maskW, maskH);
@@ -398,16 +526,16 @@ function rebuildBits() {
   maskG.fill(255);
   maskG.textAlign(CENTER, CENTER);
   maskG.textStyle(BOLD);
-  maskG.textFont("Geist Mono, monospace");
+  maskG.textFont(MONO_FONT_P5);
   maskG.textSize(MASK_CHAR_TEXT_SIZE);
 
   for (let row = 0; row < lines.length; row++) {
     const line = lines[row];
-    const offsetX = ((longestLen - line.length) * CELL_W) / 2;
+    const offsetX = ((longestLen - line.length) * CELL_ADVANCE_X) / 2;
     for (let col = 0; col < line.length; col++) {
       const char = line[col];
-      if (char === " ") continue;
-      const cxCell = offsetX + col * CELL_W + CELL_W / 2;
+      if (/\s/u.test(char)) continue;
+      const cxCell = offsetX + col * CELL_ADVANCE_X + MASK_CELL_W / 2;
       const cyCell = row * CELL_H + CELL_H / 2;
       maskG.text(char, cxCell, cyCell);
     }
@@ -420,13 +548,19 @@ function rebuildBits() {
   const step = MASK_STEP;
 
   for (let y = step; y < h - step; y += step) {
+    const row = floor(y / CELL_H);
+    if (row < 0 || row >= lines.length) continue;
+    const line = lines[row];
+    const offsetXRow = ((longestLen - line.length) * CELL_ADVANCE_X) / 2;
     for (let x = step; x < w - step; x += step) {
       const i = 4 * ((y * d) * (w * d) + x * d);
       const lum = maskG.pixels[i] * 0.299 + maskG.pixels[i + 1] * 0.587 + maskG.pixels[i + 2] * 0.114;
       if (lum > MASK_LUM_THRESH) {
-        const cell = maskCellAt(x, y, lines, longestLen);
-        if (!cell) continue;
-        const { row, col, lx, ly } = cell;
+        const relX = x - offsetXRow;
+        const col = maskColFromRelX(relX, line.length);
+        if (col < 0 || /\s/u.test(line[col])) continue;
+        const lx = relX - col * CELL_ADVANCE_X;
+        const ly = y - row * CELL_H;
         const key = stableBitKey(row, col, lx, ly);
         const ch = (key & 1) === 0 ? "0" : "1";
         const seed = key % 100000;
@@ -510,10 +644,24 @@ function layoutMargin() {
   return LAYOUT_PAD + maxDriftScreenPx(0);
 }
 
+/**
+ * Padding above the glyph bbox. Keeps the mask centroid near the viewport vertical center
+ * so placeholder and typed text stay in the middle instead of snapping to the top.
+ */
+function topBandForLayout() {
+  const m = layoutMargin();
+  const tm = trackingMul();
+  const scale = SCREEN_MASK_SCALE;
+  const { minY, cy: by } = maskBounds;
+  const centroidOff = (by - minY) * scale * tm;
+  const targetTop = windowHeight * 0.5 - centroidOff;
+  return max(m, targetTop);
+}
+
 /** How many monospace cells fit in the current viewport width (recomputed on resize). */
 function charsPerLineForViewport() {
   const tm = trackingMul();
-  const charW = CELL_W * SCREEN_MASK_SCALE * tm;
+  const charW = CELL_ADVANCE_X * SCREEN_MASK_SCALE * tm;
   const avail = windowWidth - 2 * WRAP_H_PAD;
   const n = floor(avail / charW);
   return constrain(n, CHARS_PER_LINE_MIN, CHARS_PER_LINE_MAX);
@@ -530,7 +678,7 @@ function resizeCanvasToContent() {
   const contentW = spanW * scale * tm;
   const contentH = spanH * scale * tm;
   const w = max(max(100, windowWidth), ceil(contentW + 2 * m));
-  const topBand = m;
+  const topBand = topBandForLayout();
   const h = ceil(topBand + contentH + m + CANVAS_BOTTOM_UI_CLEAR);
   if (width !== w || height !== h) {
     resizeCanvas(w, h);
@@ -579,22 +727,31 @@ function smoothstep(edge0, edge1, x) {
   return t * t * (3 - 2 * t);
 }
 
-/** Drift amount peaks in DISTRACTED, eases at ends. */
+/**
+ * Drift scales smoothly with attention (no kinks at 65/30).
+ * Kept modest so “absent” still feels like the same letter, not a cloud.
+ */
 function driftAmount(att) {
-  if (att >= 65) return map(att, 100, 65, 0.4, 2.2);
-  if (att >= 30) return map(att, 65, 30, 2.2, 9);
-  return map(att, 30, 0, 9, 22);
+  const a = constrain(att, 0, 100);
+  const inv = 1 - smoothstep(0, 100, a);
+  const invEase = inv * inv * inv;
+  return map(invEase, 0, 1, 0.06, 1.85);
+}
+
+/** Scatter factor 0 = calm, 1 = max offset (scaled down in draw). */
+function scatterFactor(att) {
+  const a = constrain(att, 0, 100);
+  const inv = 1 - smoothstep(0, 100, a);
+  return inv * inv * inv * inv;
 }
 
 /** Worst-case screen-space offset from drift + scatter (matches draw loop). */
 function maxDriftScreenPx(att) {
   const drift = driftAmount(att);
-  const driftPx = drift * (6 + att * 0.05);
-  let scatterPx = 0;
-  if (att < 65) {
-    const sc = map(att, 65, 0, 0, 1);
-    scatterPx = 20 * sc * sc;
-  }
+  const attC = constrain(att, 0, 100);
+  const driftPx = drift * (6 + attC * 0.05);
+  const sc = scatterFactor(att);
+  const scatterPx = 17 * sc;
   return driftPx + scatterPx + 52;
 }
 
@@ -606,57 +763,144 @@ function trackingMul() {
   return 1;
 }
 
-/** 0s fade before 1s; returns false if this bit should not be drawn. */
-function bitSurvives(att, ch, seed) {
-  if (att >= 34) return true;
+/**
+ * Per-bit opacity vs attention — always leaves some signal at 0; 0s ease down slightly earlier than 1s.
+ */
+function bitGlyphOpacity(att, ch, seed) {
   const u = (seed * 0.001) % 1;
-  const t = constrain(att / 34, 0, 1);
-  const p0 = t * t * t;
-  const p1 = t * t * 0.72 + t * 0.28;
-  const p = ch === "0" ? p0 : p1;
-  return u < p;
+  const a = constrain(att, 0, 100);
+  const t = smoothstep(0, 100, a);
+  const floor = BIT_OPACITY_FLOOR;
+  const span = 1 - floor;
+  let o = floor + span * t;
+  const zeroEase = ch === "0" ? 0.94 + 0.06 * t : 1;
+  o *= zeroEase;
+  o *= 0.97 + 0.06 * u;
+  return constrain(o, BIT_OPACITY_FLOOR, 1);
 }
 
-/** Overall alpha for ghost layer. */
+/** Overall layer alpha — little falloff so absent doesn’t read as a big fade. */
 function layerAlpha(att) {
-  if (att > 25) return 255;
-  return map(att, 25, 0, 255, 35);
+  const a = constrain(att, 0, 100);
+  const t = smoothstep(0, 100, a);
+  return map(t, 0, 1, 228, 255);
 }
 
 function caretMaskGxGy() {
   const { lines, longestLen } = lastLayout;
   if (!lines || lines.length === 0) {
-    return { gx: CELL_W / 2, gy: CELL_H / 2 };
+    return { gx: MASK_CELL_W / 2, gy: CELL_H / 2 };
   }
   const row = lines.length - 1;
   const line = lines[row];
-  const maskW = longestLen * CELL_W;
+  const maskW = (longestLen - 1) * CELL_ADVANCE_X + MASK_CELL_W;
   const gy = row * CELL_H + CELL_H / 2;
   if (line.length === 0) {
     return { gx: maskW / 2, gy };
   }
-  const offsetX = ((longestLen - line.length) * CELL_W) / 2;
+  const offsetX = ((longestLen - line.length) * CELL_ADVANCE_X) / 2;
   const ins = line.length;
-  const gx = offsetX + ins * CELL_W + CELL_W / 2;
+  const gx = offsetX + ins * CELL_ADVANCE_X + MASK_CELL_W / 2;
   return { gx, gy };
 }
 
+/**
+ * Map each phraseBuffer index to mask grid { row, col } (null for newlines). Requires
+ * phraseBuffer.length === normalizePhraseBuffer(phraseBuffer).length for a valid map.
+ */
+function buildBufferIndexToCellMap(phraseBuffer) {
+  const phrase = normalizePhraseBuffer(phraseBuffer);
+  if (phraseBuffer.length !== phrase.length) return null;
+  const { lines, longestLen } = lastLayout;
+  if (!lines || lines.length === 0) return null;
+  const flat = [];
+  for (let r = 0; r < lines.length; r++) {
+    for (let c = 0; c < lines[r].length; c++) {
+      flat.push({ row: r, col: c });
+    }
+  }
+  const map = new Array(phraseBuffer.length).fill(null);
+  let j = 0;
+  for (let i = 0; i < phrase.length; i++) {
+    if (phrase[i] === "\n") {
+      map[i] = null;
+      continue;
+    }
+    if (j < flat.length) {
+      map[i] = flat[j];
+      j++;
+    }
+  }
+  if (j !== flat.length) return null;
+  return map;
+}
+
+/** Native-style blue selection behind the 0/1 field (merged per row for clean edges). */
+function drawSelectionHighlight(cx, cy, bx, by, scale, tm) {
+  if (!phraseSelection || phraseSelection.end <= phraseSelection.start) return;
+  const phrase = normalizePhraseBuffer(phraseBuffer);
+  if (phraseBuffer.length !== phrase.length) return;
+  const start = constrain(phraseSelection.start, 0, phrase.length);
+  const end = constrain(phraseSelection.end, start, phrase.length);
+  const map = buildBufferIndexToCellMap(phraseBuffer);
+  if (!map) return;
+  const { lines, longestLen } = lastLayout;
+  const byRow = new Map();
+  for (let i = start; i < end; i++) {
+    const cell = map[i];
+    if (!cell) continue;
+    if (!byRow.has(cell.row)) byRow.set(cell.row, []);
+    byRow.get(cell.row).push(cell.col);
+  }
+  const ctx2d = drawingContext;
+  ctx2d.save();
+  ctx2d.fillStyle = "rgba(0, 120, 255, 0.28)";
+  const sortedRows = Array.from(byRow.keys()).sort((a, b) => a - b);
+  for (const row of sortedRows) {
+    const cols = byRow.get(row);
+    cols.sort((a, b) => a - b);
+    let runS = cols[0];
+    let runE = cols[0];
+    const flushRun = () => {
+      const offsetX = ((longestLen - lines[row].length) * CELL_ADVANCE_X) / 2;
+      const gx0 = offsetX + runS * CELL_ADVANCE_X;
+      const gw = (runE - runS) * CELL_ADVANCE_X + MASK_CELL_W;
+      const gy0 = row * CELL_H;
+      const px0 = cx + (gx0 - bx) * scale * tm;
+      const py0 = cy + (gy0 - by) * scale * tm;
+      ctx2d.fillRect(px0, py0, gw * scale * tm, CELL_H * scale * tm);
+    };
+    for (let k = 1; k < cols.length; k++) {
+      if (cols[k] === runE + 1) {
+        runE = cols[k];
+      } else {
+        flushRun();
+        runS = runE = cols[k];
+      }
+    }
+    flushRun();
+  }
+  ctx2d.restore();
+}
+
 function drawTypingCaret(cx, cy, bx, by, scale, tm) {
-  if (awaitingFirstEdit || !phraseCanvasElt) return;
-  if (document.activeElement !== phraseCanvasElt) return;
+  if (!phraseCanvasElt) return;
+  if (phraseSelection && phraseSelection.end > phraseSelection.start) return;
+  const showPlaceholderCaret = awaitingFirstEdit && bits.length > 0;
+  const showEditCaret = !awaitingFirstEdit && document.activeElement === phraseCanvasElt;
+  if (!showPlaceholderCaret && !showEditCaret) return;
   if (!caretBlinkOn) return;
   const { gx, gy } = caretMaskGxGy();
   const px = cx + (gx - bx) * scale * tm;
   const py = cy + (gy - by) * scale * tm;
-  push();
-  fill(20, 20, 22);
-  noStroke();
-  rectMode(CENTER);
-  const barW = max(2, scale * 1.25);
-  const barH = CELL_H * scale * tm * 0.62;
-  rect(px, py, barW, barH);
-  rectMode(CORNER);
-  pop();
+  const lineH = CELL_H * scale * tm * 0.52;
+  const ctx2d = drawingContext;
+  ctx2d.save();
+  ctx2d.fillStyle = "rgb(20, 20, 22)";
+  const barW = max(1 / pixelDensity(), 0.75);
+  const x0 = px - barW * 0.5;
+  ctx2d.fillRect(x0, py - lineH * 0.5, barW, lineH);
+  ctx2d.restore();
 }
 
 function draw() {
@@ -669,7 +913,7 @@ function draw() {
   const tm = trackingMul();
   const scale = SCREEN_MASK_SCALE;
   const m = layoutMargin();
-  const top = m;
+  const top = topBandForLayout();
   const { minX, minY, maxX, cx: bx, cy: by } = maskBounds;
   /* When canvas is wider than the window, center in the viewport — not canvas width — so text isn't pushed off-screen right. */
   let cx = min(width, windowWidth) * 0.5;
@@ -678,6 +922,7 @@ function draw() {
   cx = constrain(cx, m + leftCore, width - m - rightCore);
   const cy = top + (by - minY) * scale * tm;
   const drift = driftAmount(att);
+  const scat = scatterFactor(att);
   const alpha = layerAlpha(att);
 
   if (bits.length === 0) {
@@ -693,6 +938,8 @@ function draw() {
     return;
   }
 
+  drawSelectionHighlight(cx, cy, bx, by, scale, tm);
+
   const ctx2d = drawingContext;
   ctx2d.textAlign = "center";
   ctx2d.textBaseline = "middle";
@@ -701,71 +948,72 @@ function draw() {
 
   noStroke();
   for (const b of bits) {
-    if (!bitSurvives(att, b.ch, b.seed)) continue;
-
     const nx = (b.seed % 97) / 97;
     const ny = (floor(b.seed / 97) % 97) / 97;
     const n1 = b.n1;
     const n2 = b.n2;
     const n3 = b.n3;
 
-    let dx = (n1 - 0.5) * 2 * drift * (6 + att * 0.05);
-    let dy = (n2 - 0.5) * 2 * drift * (6 + att * 0.05);
+    const attC = constrain(att, 0, 100);
+    const driftMul = 5.2 + attC * 0.04;
+    let dx = (n1 - 0.5) * 2 * drift * driftMul;
+    let dy = (n2 - 0.5) * 2 * drift * driftMul;
 
-    if (att < 65) {
-      const scatter = map(att, 65, 0, 0, 1);
-      dx += (nx - 0.5) * 40 * scatter * scatter;
-      dy += (ny - 0.5) * 40 * scatter * scatter;
-    }
+    dx += (nx - 0.5) * 18 * scat;
+    dy += (ny - 0.5) * 18 * scat;
 
     const px = cx + (b.gx - bx) * scale * tm + dx;
     const py = cy + (b.gy - by) * scale * tm + dy;
 
     const grain = (n3 - 0.5) * 0.72 + (n2 - 0.5) * 0.35;
-    let sz = 5.2 * scale * 2.1;
+    let sz = 5.2 * scale * 2.1 * GLYPH_SIZE_SCALE;
     sz *= 1 + grain;
-    sz = constrain(sz, 3.6, 28);
+    sz = constrain(sz, 2.4, 17);
 
     const sx = b.sx ?? 1;
     const sy = b.sy ?? 1;
     const wNorm = b.wNorm ?? 0.55;
     const rot = b.rot ?? 0;
-    const rotAtt = rot * map(att, 0, 100, 1.35, 0.75);
+    const rotEase = smoothstep(0, 100, attC);
+    const rotAtt = rot * map(rotEase, 0, 1, 0.95, 0.78);
 
     const isOne = b.ch === "1";
     const baseDark = isOne ? 10 : 26;
-    const fade = att >= 42 ? 1 : smoothstep(4, 38, att);
+    const fade = 0.58 + 0.42 * smoothstep(0, 100, attC);
     const light = isOne ? 132 : 142;
     const c = baseDark * fade + light * (1 - fade);
     const cr = c;
     const cg = c;
     const cb = min(255, c + (isOne ? 0 : 6));
 
-    const fontPx = Math.max(4, Math.round(sz));
+    const fontPx = Math.max(3, Math.round(sz));
     const weight = wNorm > 0.52 ? 700 : 500;
+    const bitOp = bitGlyphOpacity(att, b.ch, b.seed);
+    const fillA = alphaNorm * bitOp;
     ctx2d.save();
     ctx2d.translate(px, py);
     ctx2d.rotate(rotAtt);
     ctx2d.scale(sx, sy);
     /* Must set font + fill every glyph: restore() resets them to p5 defaults (often white fill). */
-    ctx2d.font = `${weight} ${fontPx}px "Geist Mono", monospace`;
-    ctx2d.fillStyle = `rgba(${cr},${cg},${cb},${alphaNorm})`;
+    ctx2d.font = `${weight} ${fontPx}px ${MONO_FONT_CANVAS}`;
+    ctx2d.fillStyle = `rgba(${cr},${cg},${cb},${fillA})`;
     ctx2d.fillText(b.ch, 0, 0);
     ctx2d.restore();
   }
 
-  if (att < 45 && bits.length) {
+  if (bits.length) {
     drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha);
   }
 
   drawTypingCaret(cx, cy, bx, by, scale, tm);
 }
 
-/** Faint residual strokes when nearly absent (independent of culled glyphs). */
+/** Faint residual strokes — ramps in softly as attention drops. */
 function drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha) {
-  const g = map(att, 0, 45, 0.28, 0);
-  if (g < 0.02) return;
-  stroke(40, 40, 45, alpha * g * 0.38);
+  const a = constrain(att, 0, 100);
+  const g = (1 - smoothstep(0, 100, a)) ** 3;
+  if (g < 0.002) return;
+  stroke(40, 40, 45, alpha * g * 0.14);
   strokeWeight(0.55);
   const ghostStep = bits.length > 12000 ? 72 : 40;
   for (let i = 0; i < bits.length; i += ghostStep) {
