@@ -122,13 +122,32 @@ function parseHexColor(hex) {
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
-function getBitColorsFromUI() {
-  const el0 = document.getElementById("color-bit-0");
-  const el1 = document.getElementById("color-bit-1");
-  return {
-    zero: parseHexColor(el0 && el0.value ? el0.value : "#1a1a22"),
-    one: parseHexColor(el1 && el1.value ? el1.value : "#12121a"),
-  };
+/** Up to three { zero, one } pairs from the panel (primary + two optional rows). */
+function getBitPalettesFromUI() {
+  const stack = document.getElementById("bit-palette-rows");
+  const rows = stack ? stack.querySelectorAll(".bit-palette-row") : [];
+  const palettes = [];
+  for (const row of rows) {
+    const el0 = row.querySelector(".bit-color-0");
+    const el1 = row.querySelector(".bit-color-1");
+    palettes.push({
+      zero: parseHexColor(el0 && el0.value ? el0.value : "#1a1a22"),
+      one: parseHexColor(el1 && el1.value ? el1.value : "#12121a"),
+    });
+  }
+  if (palettes.length === 0) {
+    return [{ zero: parseHexColor("#1a1a22"), one: parseHexColor("#12121a") }];
+  }
+  return palettes;
+}
+
+/** Stable palette slot 0..count-1 from bit identity (phrase edits keep local coloring). */
+function paletteIndexForBit(b, paletteCount) {
+  if (paletteCount <= 1) return 0;
+  let h = (b.seed ^ (floor(b.gx) * 73856093) ^ (floor(b.gy) * 19349663)) | 0;
+  h = Math.imul(h ^ (h >>> 16), 0x7feb792d);
+  h = Math.imul(h ^ (h >>> 15), 0x846ca68b);
+  return (h >>> 0) % paletteCount;
 }
 
 function getBackgroundHex() {
@@ -151,7 +170,8 @@ function backgroundLuminance01() {
 /**
  * Shared 0/1 screen state for canvas draw and SVG export (same math as the live view).
  */
-function computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, colors) {
+function computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, palettes) {
+  const colors = palettes[paletteIndexForBit(b, palettes.length)];
   const nx = (b.seed % 97) / 97;
   const ny = (floor(b.seed / 97) % 97) / 97;
   const n1 = b.n1;
@@ -231,11 +251,11 @@ function buildExportSvgDocument() {
   cx = constrain(cx, m + leftCore, width - m - rightCore);
   const cy = top + (by - minY) * scale * tm;
   const alphaNorm = layerAlpha(att) / 255;
-  const colors = getBitColorsFromUI();
+  const palettes = getBitPalettesFromUI();
   const deg = 180 / PI;
   const pieces = [];
   for (const b of bits) {
-    const st = computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, colors);
+    const st = computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, palettes);
     const tr = `translate(${st.px.toFixed(2)},${st.py.toFixed(2)}) rotate(${(st.rotAtt * deg).toFixed(4)}) scale(${st.sx.toFixed(4)},${st.sy.toFixed(4)})`;
     pieces.push(
       `<g transform="${tr}"><text text-anchor="middle" dominant-baseline="central" font-weight="${st.weight}" font-size="${st.fontPx}" font-family="SF Mono, ui-monospace, Menlo, Monaco, Consolas, monospace" fill="rgba(${st.cr.toFixed(2)},${st.cg.toFixed(2)},${st.cb.toFixed(2)},${st.fillA.toFixed(4)})">${escapeXml(st.ch)}</text></g>`
@@ -535,11 +555,46 @@ function setup() {
     });
   });
 
-  const colorBit0 = document.getElementById("color-bit-0");
-  const colorBit1 = document.getElementById("color-bit-1");
+  const bitPaletteStack = document.getElementById("bit-palette-rows");
+  if (bitPaletteStack) {
+    bitPaletteStack.addEventListener("input", (e) => {
+      const t = e.target;
+      if (t && t.matches && t.matches("input.bit-color-0, input.bit-color-1")) scheduleRedraw();
+    });
+  }
+  const EXTRA_PALETTE_DEFAULTS = [
+    { zero: "#333d4a", one: "#2a3540" },
+    { zero: "#4a3d33", one: "#40352a" },
+  ];
+  const addBitPaletteBtn = document.getElementById("add-bit-palette");
+  function syncBitPaletteAddButton() {
+    if (!addBitPaletteBtn || !bitPaletteStack) return;
+    const n = bitPaletteStack.querySelectorAll(".bit-palette-row").length;
+    addBitPaletteBtn.disabled = n >= 3;
+  }
+  function appendBitPaletteRow() {
+    if (!bitPaletteStack || !addBitPaletteBtn) return;
+    const existing = bitPaletteStack.querySelectorAll(".bit-palette-row").length;
+    if (existing >= 3) return;
+    const idx = existing - 1;
+    const defs = EXTRA_PALETTE_DEFAULTS[idx] || EXTRA_PALETTE_DEFAULTS[EXTRA_PALETTE_DEFAULTS.length - 1];
+    const row = document.createElement("div");
+    row.className = "bit-palette-row bit-palette-row--extra";
+    row.innerHTML = `<span class="bit-swatch-label">0</span><input type="color" class="bit-color-0" value="${defs.zero}" aria-label="Extra color for zero bits" /><span class="bit-swatch-label">1</span><input type="color" class="bit-color-1" value="${defs.one}" aria-label="Extra color for one bits" /><button type="button" class="palette-remove-btn" title="Remove this color pair" aria-label="Remove this 0 and 1 color pair">−</button>`;
+    bitPaletteStack.appendChild(row);
+    row.querySelector(".palette-remove-btn").addEventListener("click", () => {
+      row.remove();
+      syncBitPaletteAddButton();
+      scheduleRedraw();
+    });
+    syncBitPaletteAddButton();
+    scheduleRedraw();
+  }
+  if (addBitPaletteBtn && bitPaletteStack) {
+    addBitPaletteBtn.addEventListener("click", appendBitPaletteRow);
+    syncBitPaletteAddButton();
+  }
   const colorBg = document.getElementById("color-background");
-  if (colorBit0) colorBit0.addEventListener("input", scheduleRedraw);
-  if (colorBit1) colorBit1.addEventListener("input", scheduleRedraw);
   if (colorBg) {
     colorBg.addEventListener("input", () => {
       syncSketchHostBackground();
@@ -1178,7 +1233,7 @@ function draw() {
 
   drawSelectionHighlight(cx, cy, bx, by, scale, tm);
 
-  const colors = getBitColorsFromUI();
+  const palettes = getBitPalettesFromUI();
   const ctx2d = drawingContext;
   ctx2d.textAlign = "center";
   ctx2d.textBaseline = "middle";
@@ -1186,7 +1241,7 @@ function draw() {
   const alphaNorm = alpha / 255;
   noStroke();
   for (const b of bits) {
-    const st = computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, colors);
+    const st = computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, palettes);
     ctx2d.save();
     ctx2d.translate(st.px, st.py);
     ctx2d.rotate(st.rotAtt);
@@ -1199,20 +1254,28 @@ function draw() {
   }
 
   if (bits.length) {
-    drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, colors);
+    drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, palettes);
   }
 
   drawTypingCaret(cx, cy, bx, by, scale, tm);
 }
 
 /** Faint residual strokes — ramps in softly as attention drops. */
-function drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, bitColors) {
+function drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, bitPalettes) {
   const a = constrain(att, 0, 100);
   const ghostAmt = (1 - smoothstep(0, 100, a)) ** 3;
   if (ghostAmt < 0.002) return;
-  const r = (bitColors.zero.r + bitColors.one.r) * 0.22;
-  const gc = (bitColors.zero.g + bitColors.one.g) * 0.22;
-  const b = (bitColors.zero.b + bitColors.one.b) * 0.22;
+  let r = 0;
+  let gc = 0;
+  let bb = 0;
+  const n = bitPalettes.length;
+  const scaleGhost = 0.22 / n;
+  for (const p of bitPalettes) {
+    r += (p.zero.r + p.one.r) * scaleGhost;
+    gc += (p.zero.g + p.one.g) * scaleGhost;
+    bb += (p.zero.b + p.one.b) * scaleGhost;
+  }
+  const b = bb;
   stroke(r, gc, b, alpha * ghostAmt * 0.14);
   strokeWeight(0.55);
   const ghostStep = bits.length > 12000 ? 72 : 40;

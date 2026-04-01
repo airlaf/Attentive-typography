@@ -127,6 +127,62 @@
       cursor: pointer;
       background: #fff;
     }
+    .bit-palette-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bit-palette-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 10px;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #444;
+    }
+    .bit-palette-row .bit-swatch-label {
+      min-width: 0.75em;
+      color: #555;
+    }
+    .bit-palette-row input[type="color"] {
+      width: 44px;
+      height: 32px;
+      padding: 0;
+      border: 1px solid #ccc;
+      cursor: pointer;
+      background: #fff;
+    }
+    .palette-add-btn,
+    .palette-remove-btn {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      margin: 0;
+      padding: 0;
+      font-family: inherit;
+      font-size: 18px;
+      font-weight: 500;
+      line-height: 1;
+      border: 1px solid #ccc;
+      background: #fff;
+      color: #111;
+      cursor: pointer;
+    }
+    .palette-add-btn:hover,
+    .palette-remove-btn:hover {
+      background: #f0f0f2;
+    }
+    .palette-add-btn:focus-visible,
+    .palette-remove-btn:focus-visible {
+      outline: 2px solid #111;
+      outline-offset: 2px;
+    }
+    .palette-add-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
     .panel-footer {
       margin-top: auto;
       padding-top: 8px;
@@ -216,14 +272,15 @@
 
       <section class="panel-section" aria-labelledby="colors-heading">
         <h2 id="colors-heading">Bit colors</h2>
-        <p class="panel-desc" style="margin-top: -4px;">Tint the 0 and 1 glyphs that make up each letter.</p>
-        <div class="color-row">
-          <span>0 bits</span>
-          <input type="color" id="color-bit-0" value="#1a1a22" aria-label="Color for zero bits" />
-        </div>
-        <div class="color-row">
-          <span>1 bits</span>
-          <input type="color" id="color-bit-1" value="#12121a" aria-label="Color for one bits" />
+        <p class="panel-desc" style="margin-top: -4px;">Tint the 0 and 1 glyphs. Use + for up to two extra color pairs—bits pick a pair by position.</p>
+        <div id="bit-palette-rows" class="bit-palette-stack">
+          <div class="bit-palette-row bit-palette-row--primary">
+            <span class="bit-swatch-label">0</span>
+            <input type="color" id="color-bit-0" class="bit-color-0" value="#1a1a22" aria-label="Primary color for zero bits" />
+            <span class="bit-swatch-label">1</span>
+            <input type="color" id="color-bit-1" class="bit-color-1" value="#12121a" aria-label="Primary color for one bits" />
+            <button type="button" class="palette-add-btn" id="add-bit-palette" title="Add another 0/1 color pair" aria-label="Add another 0 and 1 color pair">+</button>
+          </div>
         </div>
         <div class="color-row">
           <span>Background</span>
