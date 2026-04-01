@@ -9,6 +9,10 @@ const MONO_FONT_CANVAS = '"SF Mono", ui-monospace, Menlo, Monaco, Consolas, mono
 
 let attentionInput;
 
+/** Preset + gaze status bands on 0–100 (skewed: distracted sits lower, not even thirds). */
+const ATTENTION_DISTRACTED_MIN = 26;
+const ATTENTION_PRESENT_MIN = 60;
+
 /** WebGazer: gaze drives attention when calibrated; manual slider otherwise. */
 let eyeTrackingActive = false;
 let eyeTrackingCalibrated = false;
@@ -20,7 +24,7 @@ let lastGazeSample = null;
 let lastGazeAt = 0;
 const focusZone = { centerX: 0, centerY: 0, width: 1, height: 1 };
 /** Raw typed text (newlines = manual line breaks; width-wrap still applies per block). */
-const PLACEHOLDER_PHRASE = "Pay Attention to Me!";
+const PLACEHOLDER_PHRASE = "We scroll more than we read. Try to pay attention to me?";
 let phraseBuffer = PLACEHOLDER_PHRASE;
 /** Until first click or key, show placeholder; then clear and show caret. */
 let awaitingFirstEdit = true;
@@ -120,6 +124,49 @@ let phraseDebounceId = 0;
 let redrawRafId = 0;
 let resizeLayoutRafId = 0;
 
+/** ~30fps redraw while gaze is active — avoids p5 loop() at 60fps over thousands of glyphs. */
+let eyeTrackingRedrawIntervalId = 0;
+/** Skip redundant gaze chip DOM writes. */
+let lastGazeStatusKey = "";
+/** Cache panel colors between UI edits (draw hot path). */
+let drawStyleCacheValid = false;
+let cachedPalettesDraw = null;
+let cachedBgRgbDraw = null;
+
+function invalidateDrawStyleCache() {
+  drawStyleCacheValid = false;
+}
+
+function refreshDrawStyleCache() {
+  cachedPalettesDraw = getBitPalettesFromUI();
+  cachedBgRgbDraw = parseHexColor(getBackgroundHex());
+  drawStyleCacheValid = true;
+}
+
+function getCachedPalettesForDraw() {
+  if (!drawStyleCacheValid) refreshDrawStyleCache();
+  return cachedPalettesDraw;
+}
+
+function getCachedBgRgbForDraw() {
+  if (!drawStyleCacheValid) refreshDrawStyleCache();
+  return cachedBgRgbDraw;
+}
+
+function startEyeTrackingRedrawLoop() {
+  stopEyeTrackingRedrawLoop();
+  eyeTrackingRedrawIntervalId = window.setInterval(() => {
+    if (eyeTrackingActive && eyeTrackingCalibrated) redraw();
+  }, 33);
+}
+
+function stopEyeTrackingRedrawLoop() {
+  if (eyeTrackingRedrawIntervalId) {
+    clearInterval(eyeTrackingRedrawIntervalId);
+    eyeTrackingRedrawIntervalId = 0;
+  }
+}
+
 /** Width of the main canvas column (right of the control panel). */
 function layoutContentWidth() {
   const host = document.getElementById("sketch-host");
@@ -175,7 +222,8 @@ function syncSketchHostBackground() {
 
 /** 0 = black, 1 = white — for caret / hint / selection contrast. */
 function backgroundLuminance01() {
-  const { r, g, b } = parseHexColor(getBackgroundHex());
+  if (!drawStyleCacheValid) refreshDrawStyleCache();
+  const { r, g, b } = cachedBgRgbDraw;
   return constrain((0.299 * r + 0.587 * g + 0.114 * b) / 255, 0, 1);
 }
 
@@ -193,11 +241,20 @@ function computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, palet
   const attC = constrain(att, 0, 100);
   const drift = driftAmount(att);
   const scat = scatterFactor(att);
+  const invChaos = 1 - smoothstep(0, 100, attC);
+  const chaos = invChaos * invChaos;
+  const driftChaosBoost = 1 + 0.5 * chaos;
   const driftMul = 5.2 + attC * 0.04;
-  let dx = (n1 - 0.5) * 2 * drift * driftMul;
-  let dy = (n2 - 0.5) * 2 * drift * driftMul;
-  dx += (nx - 0.5) * 18 * scat;
-  dy += (ny - 0.5) * 18 * scat;
+  let dx = (n1 - 0.5) * 2 * drift * driftMul * driftChaosBoost;
+  let dy = (n2 - 0.5) * 2 * drift * driftMul * driftChaosBoost;
+  const scatterAmp = 18 * (1 + 1 * chaos);
+  dx += (nx - 0.5) * scatterAmp * scat;
+  dy += (ny - 0.5) * scatterAmp * scat;
+  const n4 = ((b.seed * 17) % 97) / 97;
+  const n5 = ((b.seed * 31) % 97) / 97;
+  const jitterAmp = 12 * chaos * scat;
+  dx += (n4 - 0.5) * jitterAmp;
+  dy += (n5 - 0.5) * jitterAmp;
 
   const px = cx + (b.gx - bx) * scale * tm + dx;
   const py = cy + (b.gy - by) * scale * tm + dy;
@@ -212,7 +269,7 @@ function computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, palet
   const wNorm = b.wNorm ?? 0.55;
   const rot = b.rot ?? 0;
   const rotEase = smoothstep(0, 100, attC);
-  const rotAtt = rot * map(rotEase, 0, 1, 0.95, 0.78);
+  const rotAtt = rot * map(rotEase, 0, 1, 0.95, 0.78) * (1 + 0.12 * chaos);
 
   const isOne = b.ch === "1";
   const rgb = isOne ? colors.one : colors.zero;
@@ -438,18 +495,23 @@ function hideEyeTrackingError() {
 function updateGazeStatusDisplay() {
   const el = document.getElementById("gaze-attention-status");
   if (!el) return;
-  el.classList.remove("gaze-st-present", "gaze-st-distracted", "gaze-st-absent", "is-visible");
   if (!eyeTrackingActive || !eyeTrackingCalibrated) {
+    lastGazeStatusKey = "";
     el.textContent = "";
+    el.classList.remove("gaze-st-present", "gaze-st-distracted", "gaze-st-absent", "is-visible");
     return;
   }
+  const a = gazeAttentionT * 100;
+  const key =
+    a >= ATTENTION_PRESENT_MIN ? "present" : a >= ATTENTION_DISTRACTED_MIN ? "distracted" : "absent";
+  if (key === lastGazeStatusKey) return;
+  lastGazeStatusKey = key;
+  el.classList.remove("gaze-st-present", "gaze-st-distracted", "gaze-st-absent");
   el.classList.add("is-visible");
-  const t = gazeAttentionT;
-  const a = t * 100;
-  if (a >= 65) {
+  if (key === "present") {
     el.textContent = "● PRESENT";
     el.classList.add("gaze-st-present");
-  } else if (a >= 30) {
+  } else if (key === "distracted") {
     el.textContent = "● DISTRACTED";
     el.classList.add("gaze-st-distracted");
   } else {
@@ -526,7 +588,8 @@ function finishEyeCalibration() {
   });
   setTimeout(layoutWebGazerVideoCorner, 400);
   updateGazeStatusDisplay();
-  loop();
+  startEyeTrackingRedrawLoop();
+  redraw();
 }
 
 function onCalibrationDotClick(evt) {
@@ -546,10 +609,12 @@ function onCalibrationDotClick(evt) {
 }
 
 function resetEyeTrackingUiOff() {
+  stopEyeTrackingRedrawLoop();
   eyeTrackingActive = false;
   eyeTrackingCalibrated = false;
   lastGazeSample = null;
   lastGazeAt = 0;
+  lastGazeStatusKey = "";
   cleanupWebGazerResources();
   closeCalibrationOverlay();
   hideEyeTrackingError();
@@ -962,7 +1027,7 @@ function setup() {
   elt.setAttribute("aria-multiline", "true");
   elt.setAttribute(
     "aria-label",
-    "Click to start typing. Placeholder: Pay Attention to Me. Then type letters, numbers, punctuation, symbols, or Enter for a new line."
+    "Click to start typing. Placeholder: We scroll more than we read. Try to pay attention to me? Then type letters, numbers, punctuation, symbols, or Enter for a new line."
   );
   elt.style.outline = "none";
   elt.addEventListener("pointerdown", () => {
@@ -1005,7 +1070,10 @@ function setup() {
   if (bitPaletteStack) {
     bitPaletteStack.addEventListener("input", (e) => {
       const t = e.target;
-      if (t && t.matches && t.matches("input.bit-color-0, input.bit-color-1")) scheduleRedraw();
+      if (t && t.matches && t.matches("input.bit-color-0, input.bit-color-1")) {
+        invalidateDrawStyleCache();
+        scheduleRedraw();
+      }
     });
   }
   const EXTRA_PALETTE_DEFAULTS = [
@@ -1031,9 +1099,11 @@ function setup() {
     row.querySelector(".palette-remove-btn").addEventListener("click", () => {
       row.remove();
       syncBitPaletteAddButton();
+      invalidateDrawStyleCache();
       scheduleRedraw();
     });
     syncBitPaletteAddButton();
+    invalidateDrawStyleCache();
     scheduleRedraw();
   }
   if (addBitPaletteBtn && bitPaletteStack) {
@@ -1043,6 +1113,7 @@ function setup() {
   const colorBg = document.getElementById("color-background");
   if (colorBg) {
     colorBg.addEventListener("input", () => {
+      invalidateDrawStyleCache();
       syncSketchHostBackground();
       scheduleRedraw();
     });
@@ -1114,9 +1185,9 @@ function updatePresetButtons() {
   document.querySelectorAll(".preset-btn").forEach((btn) => {
     const band = btn.getAttribute("data-band");
     let on = false;
-    if (band === "present") on = a >= 65;
-    else if (band === "distracted") on = a >= 30 && a < 65;
-    else if (band === "absent") on = a < 30;
+    if (band === "present") on = a >= ATTENTION_PRESENT_MIN;
+    else if (band === "distracted") on = a >= ATTENTION_DISTRACTED_MIN && a < ATTENTION_PRESENT_MIN;
+    else if (band === "absent") on = a < ATTENTION_DISTRACTED_MIN;
     btn.classList.toggle("is-active", on);
   });
 }
@@ -1463,14 +1534,14 @@ function smoothstep(edge0, edge1, x) {
 }
 
 /**
- * Drift scales smoothly with attention (no kinks at 65/30).
- * Kept modest so “absent” still feels like the same letter, not a cloud.
+ * Drift scales smoothly with attention (no kinks at preset band edges).
+ * Caps a bit higher so “absent” scatters more; layout padding via maxDriftScreenPx.
  */
 function driftAmount(att) {
   const a = constrain(att, 0, 100);
   const inv = 1 - smoothstep(0, 100, a);
   const invEase = inv * inv * inv;
-  const cap = eyeTrackingActive && eyeTrackingCalibrated ? 2.45 : 1.85;
+  const cap = eyeTrackingActive && eyeTrackingCalibrated ? 2.85 : 2.2;
   return map(invEase, 0, 1, 0.06, cap);
 }
 
@@ -1488,10 +1559,14 @@ function scatterFactor(att) {
 function maxDriftScreenPx(att) {
   const drift = driftAmount(att);
   const attC = constrain(att, 0, 100);
-  const driftPx = drift * (6 + attC * 0.05);
+  const invChaos = 1 - smoothstep(0, 100, attC);
+  const chaos = invChaos * invChaos;
+  const driftChaosBoost = 1 + 0.5 * chaos;
+  const driftPx = drift * (6 + attC * 0.05) * driftChaosBoost;
   const sc = scatterFactor(att);
-  const scatterPx = 17 * sc;
-  return driftPx + scatterPx + 52;
+  const scatterAmp = 18 * (1 + 1 * chaos);
+  const scatterPx = 0.5 * scatterAmp * sc + 6 * chaos * sc;
+  return driftPx + scatterPx + 58;
 }
 
 /**
@@ -1674,14 +1749,17 @@ function draw() {
       gazeAttentionT += d * rateDown;
     }
     gazeAttentionT = constrain(gazeAttentionT, 0, 1);
-    if (attentionInput) attentionInput.value = String(round(gazeAttentionT * 100));
-    updatePresetButtons();
+    const gazeStr = String(round(gazeAttentionT * 100));
+    if (attentionInput && attentionInput.value !== gazeStr) {
+      attentionInput.value = gazeStr;
+      updatePresetButtons();
+    }
   }
   updateGazeStatusDisplay();
 
   const att = getAttention();
   const attGlyphs = getGlyphAttention(att);
-  const bgRgb = parseHexColor(getBackgroundHex());
+  const bgRgb = getCachedBgRgbForDraw();
   background(bgRgb.r, bgRgb.g, bgRgb.b);
   const alpha = layerAlphaForGlyphs(attGlyphs);
 
@@ -1704,7 +1782,7 @@ function draw() {
 
   drawSelectionHighlight(cx, cy, bx, by, scale, tm);
 
-  const palettes = getBitPalettesFromUI();
+  const palettes = getCachedPalettesForDraw();
   const ctx2d = drawingContext;
   ctx2d.textAlign = "center";
   ctx2d.textBaseline = "middle";
@@ -1750,7 +1828,7 @@ function drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, bitPalettes) {
   const b = bb;
   stroke(r, gc, b, alpha * ghostAmt * 0.14);
   strokeWeight(0.55);
-  const ghostStep = bits.length > 12000 ? 72 : 40;
+  const ghostStep = bits.length > 12000 ? 72 : bits.length > 7000 ? 56 : 40;
   for (let i = 0; i < bits.length; i += ghostStep) {
     const bit = bits[i];
     const px = cx + (bit.gx - bx) * scale * tm;

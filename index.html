@@ -4,7 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Attention Type — 0/1 Variable</title>
-  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="favicon.png" type="image/png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&display=swap" rel="stylesheet" />
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -31,7 +34,7 @@
       gap: 32px;
       overflow-y: auto;
       z-index: 10;
-      font-family: "SF Mono", ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      font-family: "Lora", Georgia, "Times New Roman", serif;
     }
     #control-panel input,
     #control-panel button,
@@ -43,13 +46,33 @@
       flex-direction: column;
       gap: 14px;
     }
+    .panel-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.05rem;
+    }
+    .panel-brand-icon {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+      object-fit: contain;
+      display: block;
+      /* Uppercase title sits high in the line box; nudge icon up to match cap height */
+      transform: translateY(-0.12em);
+    }
     #control-panel h1 {
       margin: 0;
       font-size: 1.05rem;
       font-weight: 700;
+      font-style: italic;
       letter-spacing: 0.04em;
       text-transform: uppercase;
       line-height: 1.25;
+    }
+    #control-panel .panel-brand h1 {
+      font-size: 1em;
+      line-height: 1.12;
     }
     .panel-desc {
       margin: 0;
@@ -113,17 +136,74 @@
       letter-spacing: 0.12em;
       text-transform: uppercase;
       color: #6a6a72;
-      margin-bottom: 6px;
+      margin-bottom: 5px;
     }
     .slider-block .slider-value {
       letter-spacing: 0.06em;
       color: #111;
       font-variant-numeric: tabular-nums;
     }
-    .slider-block input[type="range"] {
+    #control-panel .slider-block input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
       width: 100%;
       max-width: 100%;
-      accent-color: #111;
+      height: 20px;
+      margin: 0;
+      background: transparent;
+      cursor: pointer;
+    }
+    #control-panel .slider-block input[type="range"]:focus {
+      outline: none;
+    }
+    #control-panel .slider-block input[type="range"]:focus-visible {
+      outline: 2px solid #111;
+      outline-offset: 3px;
+      border-radius: 6px;
+    }
+    #control-panel .slider-block input[type="range"]::-webkit-slider-runnable-track {
+      height: 2px;
+      border-radius: 999px;
+      background: #d6d6da;
+    }
+    #control-panel .slider-block input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 11px;
+      height: 11px;
+      margin-top: -4.5px;
+      border-radius: 50%;
+      background: #111;
+      border: 2px solid #fafafa;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    #control-panel .slider-block input[type="range"]:hover::-webkit-slider-thumb {
+      transform: scale(1.06);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+    }
+    #control-panel .slider-block input[type="range"]::-moz-range-track {
+      height: 2px;
+      border-radius: 999px;
+      background: #d6d6da;
+    }
+    #control-panel .slider-block input[type="range"]::-moz-range-progress {
+      height: 2px;
+      border-radius: 999px 0 0 999px;
+      background: #111;
+    }
+    #control-panel .slider-block input[type="range"]::-moz-range-thumb {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #111;
+      border: 2px solid #fafafa;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    #control-panel .slider-block input[type="range"]:hover::-moz-range-thumb {
+      transform: scale(1.06);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
     }
     .color-row {
       display: flex;
@@ -467,9 +547,12 @@
   <div class="app">
     <aside id="control-panel" aria-label="Controls">
       <header>
-        <h1>Attention Type</h1>
+        <div class="panel-brand">
+          <img class="panel-brand-icon" src="favicon.png" width="28" height="28" alt="" decoding="async" />
+          <h1>Attention Type</h1>
+        </div>
         <p class="panel-desc">
-          A variable typeface made entirely out of binary code that physically responds to where your attention is. At full focus, the letterforms are dense and legible. But as attention drifts, the characters loosen and scatter. It’s a reflection of what reading has become in the age of scrolling and constant consumption.
+          A variable typeface made entirely out of binary code that responds to your attention in real time. Stay focused and the letters hold. Look away and they fall apart. It is a reflection of what reading has become in the age of scrolling and constant consumption.
         </p>
       </header>
 
@@ -477,7 +560,7 @@
         <h2 id="attention-heading">Attention</h2>
         <div class="preset-row" id="attention-preset-row" role="group" aria-label="Attention presets">
           <button type="button" class="preset-btn" id="preset-absent" data-band="absent" data-attention="12">Absent</button>
-          <button type="button" class="preset-btn" id="preset-distracted" data-band="distracted" data-attention="48">Distracted</button>
+          <button type="button" class="preset-btn" id="preset-distracted" data-band="distracted" data-attention="37">Distracted</button>
           <button type="button" class="preset-btn" id="preset-present" data-band="present" data-attention="100">Present</button>
         </div>
         <div class="slider-block" id="attention-slider-block">
@@ -508,7 +591,6 @@
 
       <section class="panel-section" aria-labelledby="colors-heading">
         <h2 id="colors-heading">Bit colors</h2>
-        <p class="panel-desc">Adjust colors for binary code</p>
         <div id="bit-palette-rows" class="bit-palette-stack">
           <div class="bit-palette-row bit-palette-row--primary">
             <span class="bit-swatch-label">0</span>
@@ -531,8 +613,8 @@
       <section class="panel-section panel-footer" aria-label="Export">
         <p class="download-as-label">Download as</p>
         <div class="download-row" role="group" aria-label="Download format">
-          <button type="button" class="download-btn" id="download-png" aria-label="Download as PNG">png</button>
-          <button type="button" class="download-btn" id="download-svg" aria-label="Download as SVG">svg</button>
+          <button type="button" class="download-btn" id="download-png" aria-label="Download as PNG">PNG</button>
+          <button type="button" class="download-btn" id="download-svg" aria-label="Download as SVG">SVG</button>
         </div>
       </section>
     </aside>
