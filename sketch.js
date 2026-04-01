@@ -34,7 +34,13 @@ const MASK_CELL_W = 80;
  */
 const CELL_ADVANCE_X = 60;
 const CELL_H = 100;
-const MASK_CHAR_TEXT_SIZE = Math.min(CELL_H * 0.76, MASK_CELL_W * 0.95);
+/** Slightly under the cell so bold caps / wide glyphs + AA don’t hit the raster edge. */
+const MASK_CHAR_TEXT_SIZE = Math.min(CELL_H * 0.76, MASK_CELL_W * 0.88);
+/**
+ * Horizontal inset on the mask bitmap so centered text isn’t clipped at the canvas edge
+ * (bold SF Mono caps often draw past the nominal cell; inserting a space changes line width and exposes it).
+ */
+const MASK_X_PAD = 16;
 
 /**
  * Mask sampling stride in pixels. Lower = denser grid (heavier draw loop).
@@ -741,7 +747,7 @@ function rebuildBits() {
 
   const longestLen = Math.max(...lines.map((ln) => ln.length), 1);
   lastLayout = { lines: lines.slice(), longestLen };
-  const maskW = (longestLen - 1) * CELL_ADVANCE_X + MASK_CELL_W;
+  const maskW = (longestLen - 1) * CELL_ADVANCE_X + MASK_CELL_W + 2 * MASK_X_PAD;
   const maskH = lines.length * CELL_H;
 
   ensureMaskGraphics(maskW, maskH);
@@ -760,7 +766,7 @@ function rebuildBits() {
     for (let col = 0; col < line.length; col++) {
       const char = line[col];
       if (/\s/u.test(char)) continue;
-      const cxCell = offsetX + col * CELL_ADVANCE_X + MASK_CELL_W / 2;
+      const cxCell = MASK_X_PAD + offsetX + col * CELL_ADVANCE_X + MASK_CELL_W / 2;
       const cyCell = row * CELL_H + CELL_H / 2;
       maskG.text(char, cxCell, cyCell);
     }
@@ -781,7 +787,7 @@ function rebuildBits() {
       const i = 4 * ((y * d) * (w * d) + x * d);
       const lum = maskG.pixels[i] * 0.299 + maskG.pixels[i + 1] * 0.587 + maskG.pixels[i + 2] * 0.114;
       if (lum > MASK_LUM_THRESH) {
-        const relX = x - offsetXRow;
+        const relX = x - offsetXRow - MASK_X_PAD;
         const col = maskColFromRelX(relX, line.length);
         if (col < 0 || /\s/u.test(line[col])) continue;
         const lx = relX - col * CELL_ADVANCE_X;
@@ -1019,14 +1025,14 @@ function caretMaskGxGy() {
   }
   const row = lines.length - 1;
   const line = lines[row];
-  const maskW = (longestLen - 1) * CELL_ADVANCE_X + MASK_CELL_W;
+  const maskW = (longestLen - 1) * CELL_ADVANCE_X + MASK_CELL_W + 2 * MASK_X_PAD;
   const gy = row * CELL_H + CELL_H / 2;
   if (line.length === 0) {
     return { gx: maskW / 2, gy };
   }
   const offsetX = ((longestLen - line.length) * CELL_ADVANCE_X) / 2;
   const ins = line.length;
-  const gx = offsetX + ins * CELL_ADVANCE_X + MASK_CELL_W / 2;
+  const gx = MASK_X_PAD + offsetX + ins * CELL_ADVANCE_X + MASK_CELL_W / 2;
   return { gx, gy };
 }
 
@@ -1090,7 +1096,7 @@ function drawSelectionHighlight(cx, cy, bx, by, scale, tm) {
     let runE = cols[0];
     const flushRun = () => {
       const offsetX = ((longestLen - lines[row].length) * CELL_ADVANCE_X) / 2;
-      const gx0 = offsetX + runS * CELL_ADVANCE_X;
+      const gx0 = MASK_X_PAD + offsetX + runS * CELL_ADVANCE_X;
       const gw = (runE - runS) * CELL_ADVANCE_X + MASK_CELL_W;
       const gy0 = row * CELL_H;
       const px0 = cx + (gx0 - bx) * scale * tm;
@@ -1145,7 +1151,6 @@ function draw() {
   const m = layoutMargin();
   const top = topBandForLayout();
   const { minX, minY, maxX, cx: bx, cy: by } = maskBounds;
-  /* When canvas is wider than the visible column, center in that column — not full canvas width — so text isn't pushed off-screen right. */
   const vw = layoutContentWidth();
   let cx = min(width, vw) * 0.5;
   const leftCore = (bx - minX) * scale * tm;
