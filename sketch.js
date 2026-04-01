@@ -67,6 +67,18 @@ let maskBounds = {
  */
 /** Chosen with larger CELL_* so on-screen letter size stays similar to the old 112×cell @ 0.9 scale. */
 const SCREEN_MASK_SCALE = 0.79;
+
+/** UI slider 50–150% as multiplier on SCREEN_MASK_SCALE (mask rebuild refreshes wrap). */
+function typeSizeMul() {
+  const el = document.getElementById("type-size");
+  let v = el ? Number(el.value) : 100;
+  if (!Number.isFinite(v)) v = 100;
+  return constrain(v, 50, 150) / 100;
+}
+
+function screenMaskScaleEffective() {
+  return SCREEN_MASK_SCALE * typeSizeMul();
+}
 const LAYOUT_PAD = 28;
 /**
  * Horizontal inset from viewport edges when deciding how many characters fit on one line.
@@ -202,7 +214,7 @@ function buildExportSvgDocument() {
   }
   const att = getAttention();
   const tm = trackingMul();
-  const scale = SCREEN_MASK_SCALE;
+  const scale = screenMaskScaleEffective();
   const m = layoutMargin();
   const top = topBandForLayout();
   const { minX, minY, maxX, cx: bx, cy: by } = maskBounds;
@@ -529,6 +541,29 @@ function setup() {
     });
   }
   syncSketchHostBackground();
+
+  function updateTypeSizeLabel() {
+    const el = document.getElementById("type-size");
+    const lab = document.getElementById("type-size-label");
+    if (!el || !lab) return;
+    lab.textContent = `${el.value}%`;
+    el.setAttribute("aria-valuenow", el.value);
+  }
+  const typeSizeEl = document.getElementById("type-size");
+  if (typeSizeEl) {
+    let typeSizeRaf = 0;
+    typeSizeEl.addEventListener("input", () => {
+      updateTypeSizeLabel();
+      cancelAnimationFrame(typeSizeRaf);
+      typeSizeRaf = requestAnimationFrame(() => {
+        rebuildBits();
+        resizeCanvasToContent();
+        redraw();
+      });
+    });
+    updateTypeSizeLabel();
+  }
+
   const pngBtn = document.getElementById("download-png");
   const svgBtn = document.getElementById("download-svg");
   if (pngBtn) pngBtn.addEventListener("click", downloadPng);
@@ -841,7 +876,7 @@ function layoutMargin() {
 function topBandForLayout() {
   const m = layoutMargin();
   const tm = trackingMul();
-  const scale = SCREEN_MASK_SCALE;
+  const scale = screenMaskScaleEffective();
   const { minY, cy: by } = maskBounds;
   const centroidOff = (by - minY) * scale * tm;
   const targetTop = windowHeight * 0.5 - centroidOff;
@@ -851,7 +886,7 @@ function topBandForLayout() {
 /** How many monospace cells fit in the current viewport width (recomputed on resize). */
 function charsPerLineForViewport() {
   const tm = trackingMul();
-  const charW = CELL_ADVANCE_X * SCREEN_MASK_SCALE * tm;
+  const charW = CELL_ADVANCE_X * screenMaskScaleEffective() * tm;
   const avail = layoutContentWidth() - 2 * WRAP_H_PAD;
   const n = floor(avail / charW);
   return constrain(n, CHARS_PER_LINE_MIN, CHARS_PER_LINE_MAX);
@@ -863,7 +898,7 @@ function charsPerLineForViewport() {
 function resizeCanvasToContent() {
   const tm = trackingMul();
   const { spanW, spanH } = maskBounds;
-  const scale = SCREEN_MASK_SCALE;
+  const scale = screenMaskScaleEffective();
   const m = layoutMargin();
   const contentW = spanW * scale * tm;
   const contentH = spanH * scale * tm;
@@ -1106,7 +1141,7 @@ function draw() {
   background(bgRgb.r, bgRgb.g, bgRgb.b);
 
   const tm = trackingMul();
-  const scale = SCREEN_MASK_SCALE;
+  const scale = screenMaskScaleEffective();
   const m = layoutMargin();
   const top = topBandForLayout();
   const { minX, minY, maxX, cx: bx, cy: by } = maskBounds;
