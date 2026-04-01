@@ -131,16 +131,27 @@
       margin-top: auto;
       padding-top: 8px;
       border-top: 1px solid #e8e8ea;
+      gap: 10px;
+    }
+    .download-as-label {
+      margin: 0;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      color: #6a6a72;
+    }
+    .download-row {
+      display: flex;
       gap: 8px;
     }
     .download-btn {
-      width: 100%;
+      flex: 1;
+      min-width: 0;
       margin: 0;
       font-family: inherit;
       font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      padding: 10px 12px;
+      letter-spacing: 0.12em;
+      text-transform: lowercase;
+      padding: 10px 10px;
       border: 1px solid #111;
       background: #fff;
       color: #111;
@@ -175,14 +186,6 @@
         border-right: none;
         border-bottom: 1px solid #e2e2e4;
         max-height: none;
-      }
-      .panel-footer {
-        flex-direction: row;
-        flex-wrap: wrap;
-      }
-      .download-btn {
-        flex: 1;
-        min-width: calc(50% - 4px);
       }
     }
   </style>
@@ -233,8 +236,11 @@
       </section>
 
       <section class="panel-section panel-footer" aria-label="Export">
-        <button type="button" class="download-btn" id="download-png">Download PNG</button>
-        <button type="button" class="download-btn" id="download-svg">Download SVG</button>
+        <p class="download-as-label">download as</p>
+        <div class="download-row" role="group" aria-label="Download format">
+          <button type="button" class="download-btn" id="download-png" aria-label="Download as PNG">png</button>
+          <button type="button" class="download-btn" id="download-svg" aria-label="Download as SVG">svg</button>
+        </div>
       </section>
     </aside>
     <main id="sketch-host"></main>
