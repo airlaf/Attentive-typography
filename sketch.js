@@ -78,8 +78,8 @@ const CHARS_PER_LINE_MIN = 4;
 const CHARS_PER_LINE_MAX = 100;
 /** Max characters stored in phraseBuffer (including newlines). */
 const PHRASE_MAX_LEN = 120;
-/** Extra canvas height so glyphs aren’t hidden under the fixed bottom UI bar. */
-const CANVAS_BOTTOM_UI_CLEAR = 120;
+/** Extra canvas height below the glyph (no bottom bar; small breathing room). */
+const CANVAS_BOTTOM_UI_CLEAR = 48;
 
 /** On-screen 0/1 size (smaller = more bits, busier letterform). */
 const GLYPH_SIZE_SCALE = 0.58;
@@ -89,6 +89,147 @@ const BIT_OPACITY_FLOOR = 0.58;
 let phraseDebounceId = 0;
 let redrawRafId = 0;
 let resizeLayoutRafId = 0;
+
+/** Width of the main canvas column (right of the control panel). */
+function layoutContentWidth() {
+  const host = document.getElementById("sketch-host");
+  if (host && host.clientWidth > 0) return host.clientWidth;
+  return max(100, windowWidth - 300);
+}
+
+function parseHexColor(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim());
+  if (!m) return { r: 26, g: 26, b: 34 };
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function getBitColorsFromUI() {
+  const el0 = document.getElementById("color-bit-0");
+  const el1 = document.getElementById("color-bit-1");
+  return {
+    zero: parseHexColor(el0 && el0.value ? el0.value : "#1a1a22"),
+    one: parseHexColor(el1 && el1.value ? el1.value : "#12121a"),
+  };
+}
+
+/**
+ * Shared 0/1 screen state for canvas draw and SVG export (same math as the live view).
+ */
+function computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, colors) {
+  const nx = (b.seed % 97) / 97;
+  const ny = (floor(b.seed / 97) % 97) / 97;
+  const n1 = b.n1;
+  const n2 = b.n2;
+  const n3 = b.n3;
+
+  const attC = constrain(att, 0, 100);
+  const drift = driftAmount(att);
+  const scat = scatterFactor(att);
+  const driftMul = 5.2 + attC * 0.04;
+  let dx = (n1 - 0.5) * 2 * drift * driftMul;
+  let dy = (n2 - 0.5) * 2 * drift * driftMul;
+  dx += (nx - 0.5) * 18 * scat;
+  dy += (ny - 0.5) * 18 * scat;
+
+  const px = cx + (b.gx - bx) * scale * tm + dx;
+  const py = cy + (b.gy - by) * scale * tm + dy;
+
+  const grain = (n3 - 0.5) * 0.72 + (n2 - 0.5) * 0.35;
+  let sz = 5.2 * scale * 2.1 * GLYPH_SIZE_SCALE;
+  sz *= 1 + grain;
+  sz = constrain(sz, 2.4, 17);
+
+  const sx = b.sx ?? 1;
+  const sy = b.sy ?? 1;
+  const wNorm = b.wNorm ?? 0.55;
+  const rot = b.rot ?? 0;
+  const rotEase = smoothstep(0, 100, attC);
+  const rotAtt = rot * map(rotEase, 0, 1, 0.95, 0.78);
+
+  const isOne = b.ch === "1";
+  const rgb = isOne ? colors.one : colors.zero;
+  const fade = 0.58 + 0.42 * smoothstep(0, 100, attC);
+  /* Dark pole: strong tint of the picker (was ~12% → read as black). */
+  const dMul = 0.62;
+  const dr = rgb.r * dMul;
+  const dg = rgb.g * dMul;
+  const db = rgb.b * dMul;
+  /* Bright pole: nudge toward white without the old +95 gray wash that killed hue. */
+  const lift = 0.32;
+  const lr = min(255, rgb.r + (255 - rgb.r) * lift);
+  const lg = min(255, rgb.g + (255 - rgb.g) * lift);
+  const lb = min(255, rgb.b + (255 - rgb.b) * lift);
+  let cr = dr * fade + lr * (1 - fade);
+  let cg = dg * fade + lg * (1 - fade);
+  let cb = db * fade + lb * (1 - fade);
+  cb = min(255, cb + (isOne ? 0 : 5));
+
+  const bitOp = bitGlyphOpacity(att, b.ch, b.seed);
+  const fillA = alphaNorm * bitOp;
+  const fontPx = Math.max(3, Math.round(sz));
+  const weight = wNorm > 0.52 ? 700 : 500;
+
+  return { px, py, rotAtt, sx, sy, fontPx, weight, cr, cg, cb, fillA, ch: b.ch };
+}
+
+function escapeXml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function buildExportSvgDocument() {
+  if (!width || !height) return "";
+  if (!bits.length) {
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n<rect width="100%" height="100%" fill="#ffffff"/>\n</svg>`;
+  }
+  const att = getAttention();
+  const tm = trackingMul();
+  const scale = SCREEN_MASK_SCALE;
+  const m = layoutMargin();
+  const top = topBandForLayout();
+  const { minX, minY, maxX, cx: bx, cy: by } = maskBounds;
+  const vw = layoutContentWidth();
+  let cx = min(width, vw) * 0.5;
+  const leftCore = (bx - minX) * scale * tm;
+  const rightCore = (maxX - bx) * scale * tm;
+  cx = constrain(cx, m + leftCore, width - m - rightCore);
+  const cy = top + (by - minY) * scale * tm;
+  const alphaNorm = layerAlpha(att) / 255;
+  const colors = getBitColorsFromUI();
+  const deg = 180 / PI;
+  const pieces = [];
+  for (const b of bits) {
+    const st = computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, colors);
+    const tr = `translate(${st.px.toFixed(2)},${st.py.toFixed(2)}) rotate(${(st.rotAtt * deg).toFixed(4)}) scale(${st.sx.toFixed(4)},${st.sy.toFixed(4)})`;
+    pieces.push(
+      `<g transform="${tr}"><text text-anchor="middle" dominant-baseline="central" font-weight="${st.weight}" font-size="${st.fontPx}" font-family="SF Mono, ui-monospace, Menlo, Monaco, Consolas, monospace" fill="rgba(${st.cr.toFixed(2)},${st.cg.toFixed(2)},${st.cb.toFixed(2)},${st.fillA.toFixed(4)})">${escapeXml(st.ch)}</text></g>`
+    );
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n<rect width="100%" height="100%" fill="#ffffff"/>\n${pieces.join("\n")}\n</svg>`;
+}
+
+function downloadPng() {
+  const c = document.querySelector("#sketch-host canvas");
+  if (!c) return;
+  const a = document.createElement("a");
+  a.href = c.toDataURL("image/png");
+  a.download = "attention-type.png";
+  a.rel = "noopener";
+  a.click();
+}
+
+function downloadSvg() {
+  const svg = buildExportSvgDocument();
+  if (!svg) return;
+  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "attention-type.svg";
+  a.rel = "noopener";
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function getAttention() {
   return attentionInput ? Number(attentionInput.value) : 100;
@@ -310,7 +451,7 @@ function onPhraseKeydown(e) {
 }
 
 function setup() {
-  const canvas = createCanvas(max(100, windowWidth), max(100, windowHeight));
+  const canvas = createCanvas(max(100, layoutContentWidth()), max(100, windowHeight));
   canvas.parent("sketch-host");
   textFont(MONO_FONT_P5);
 
@@ -356,6 +497,28 @@ function setup() {
       attentionInput.dispatchEvent(new Event("input", { bubbles: true }));
     });
   });
+
+  const colorBit0 = document.getElementById("color-bit-0");
+  const colorBit1 = document.getElementById("color-bit-1");
+  if (colorBit0) colorBit0.addEventListener("input", scheduleRedraw);
+  if (colorBit1) colorBit1.addEventListener("input", scheduleRedraw);
+  const pngBtn = document.getElementById("download-png");
+  const svgBtn = document.getElementById("download-svg");
+  if (pngBtn) pngBtn.addEventListener("click", downloadPng);
+  if (svgBtn) svgBtn.addEventListener("click", downloadSvg);
+
+  const sketchHost = document.getElementById("sketch-host");
+  if (sketchHost && typeof ResizeObserver !== "undefined") {
+    let roRaf = 0;
+    new ResizeObserver(() => {
+      cancelAnimationFrame(roRaf);
+      roRaf = requestAnimationFrame(() => {
+        rebuildBits();
+        resizeCanvasToContent();
+        redraw();
+      });
+    }).observe(sketchHost);
+  }
 
   maskG = createGraphics(MASK_CELL_W, CELL_H);
   maskG.pixelDensity(1);
@@ -662,7 +825,7 @@ function topBandForLayout() {
 function charsPerLineForViewport() {
   const tm = trackingMul();
   const charW = CELL_ADVANCE_X * SCREEN_MASK_SCALE * tm;
-  const avail = windowWidth - 2 * WRAP_H_PAD;
+  const avail = layoutContentWidth() - 2 * WRAP_H_PAD;
   const n = floor(avail / charW);
   return constrain(n, CHARS_PER_LINE_MIN, CHARS_PER_LINE_MAX);
 }
@@ -677,7 +840,8 @@ function resizeCanvasToContent() {
   const m = layoutMargin();
   const contentW = spanW * scale * tm;
   const contentH = spanH * scale * tm;
-  const w = max(max(100, windowWidth), ceil(contentW + 2 * m));
+  const hostW = layoutContentWidth();
+  const w = max(hostW, ceil(contentW + 2 * m));
   const topBand = topBandForLayout();
   const h = ceil(topBand + contentH + m + CANVAS_BOTTOM_UI_CLEAR);
   if (width !== w || height !== h) {
@@ -915,14 +1079,13 @@ function draw() {
   const m = layoutMargin();
   const top = topBandForLayout();
   const { minX, minY, maxX, cx: bx, cy: by } = maskBounds;
-  /* When canvas is wider than the window, center in the viewport — not canvas width — so text isn't pushed off-screen right. */
-  let cx = min(width, windowWidth) * 0.5;
+  /* When canvas is wider than the visible column, center in that column — not full canvas width — so text isn't pushed off-screen right. */
+  const vw = layoutContentWidth();
+  let cx = min(width, vw) * 0.5;
   const leftCore = (bx - minX) * scale * tm;
   const rightCore = (maxX - bx) * scale * tm;
   cx = constrain(cx, m + leftCore, width - m - rightCore);
   const cy = top + (by - minY) * scale * tm;
-  const drift = driftAmount(att);
-  const scat = scatterFactor(att);
   const alpha = layerAlpha(att);
 
   if (bits.length === 0) {
@@ -940,87 +1103,49 @@ function draw() {
 
   drawSelectionHighlight(cx, cy, bx, by, scale, tm);
 
+  const colors = getBitColorsFromUI();
   const ctx2d = drawingContext;
   ctx2d.textAlign = "center";
   ctx2d.textBaseline = "middle";
   ctx2d.imageSmoothingEnabled = false;
   const alphaNorm = alpha / 255;
-
   noStroke();
   for (const b of bits) {
-    const nx = (b.seed % 97) / 97;
-    const ny = (floor(b.seed / 97) % 97) / 97;
-    const n1 = b.n1;
-    const n2 = b.n2;
-    const n3 = b.n3;
-
-    const attC = constrain(att, 0, 100);
-    const driftMul = 5.2 + attC * 0.04;
-    let dx = (n1 - 0.5) * 2 * drift * driftMul;
-    let dy = (n2 - 0.5) * 2 * drift * driftMul;
-
-    dx += (nx - 0.5) * 18 * scat;
-    dy += (ny - 0.5) * 18 * scat;
-
-    const px = cx + (b.gx - bx) * scale * tm + dx;
-    const py = cy + (b.gy - by) * scale * tm + dy;
-
-    const grain = (n3 - 0.5) * 0.72 + (n2 - 0.5) * 0.35;
-    let sz = 5.2 * scale * 2.1 * GLYPH_SIZE_SCALE;
-    sz *= 1 + grain;
-    sz = constrain(sz, 2.4, 17);
-
-    const sx = b.sx ?? 1;
-    const sy = b.sy ?? 1;
-    const wNorm = b.wNorm ?? 0.55;
-    const rot = b.rot ?? 0;
-    const rotEase = smoothstep(0, 100, attC);
-    const rotAtt = rot * map(rotEase, 0, 1, 0.95, 0.78);
-
-    const isOne = b.ch === "1";
-    const baseDark = isOne ? 10 : 26;
-    const fade = 0.58 + 0.42 * smoothstep(0, 100, attC);
-    const light = isOne ? 132 : 142;
-    const c = baseDark * fade + light * (1 - fade);
-    const cr = c;
-    const cg = c;
-    const cb = min(255, c + (isOne ? 0 : 6));
-
-    const fontPx = Math.max(3, Math.round(sz));
-    const weight = wNorm > 0.52 ? 700 : 500;
-    const bitOp = bitGlyphOpacity(att, b.ch, b.seed);
-    const fillA = alphaNorm * bitOp;
+    const st = computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, colors);
     ctx2d.save();
-    ctx2d.translate(px, py);
-    ctx2d.rotate(rotAtt);
-    ctx2d.scale(sx, sy);
+    ctx2d.translate(st.px, st.py);
+    ctx2d.rotate(st.rotAtt);
+    ctx2d.scale(st.sx, st.sy);
     /* Must set font + fill every glyph: restore() resets them to p5 defaults (often white fill). */
-    ctx2d.font = `${weight} ${fontPx}px ${MONO_FONT_CANVAS}`;
-    ctx2d.fillStyle = `rgba(${cr},${cg},${cb},${fillA})`;
-    ctx2d.fillText(b.ch, 0, 0);
+    ctx2d.font = `${st.weight} ${st.fontPx}px ${MONO_FONT_CANVAS}`;
+    ctx2d.fillStyle = `rgba(${st.cr},${st.cg},${st.cb},${st.fillA})`;
+    ctx2d.fillText(st.ch, 0, 0);
     ctx2d.restore();
   }
 
   if (bits.length) {
-    drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha);
+    drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, colors);
   }
 
   drawTypingCaret(cx, cy, bx, by, scale, tm);
 }
 
 /** Faint residual strokes — ramps in softly as attention drops. */
-function drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha) {
+function drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, bitColors) {
   const a = constrain(att, 0, 100);
-  const g = (1 - smoothstep(0, 100, a)) ** 3;
-  if (g < 0.002) return;
-  stroke(40, 40, 45, alpha * g * 0.14);
+  const ghostAmt = (1 - smoothstep(0, 100, a)) ** 3;
+  if (ghostAmt < 0.002) return;
+  const r = (bitColors.zero.r + bitColors.one.r) * 0.22;
+  const gc = (bitColors.zero.g + bitColors.one.g) * 0.22;
+  const b = (bitColors.zero.b + bitColors.one.b) * 0.22;
+  stroke(r, gc, b, alpha * ghostAmt * 0.14);
   strokeWeight(0.55);
   const ghostStep = bits.length > 12000 ? 72 : 40;
   for (let i = 0; i < bits.length; i += ghostStep) {
-    const b = bits[i];
-    const px = cx + (b.gx - bx) * scale * tm;
-    const py = cy + (b.gy - by) * scale * tm;
-    const j = noise(b.seed * 0.02, i * 0.1) - 0.5;
+    const bit = bits[i];
+    const px = cx + (bit.gx - bx) * scale * tm;
+    const py = cy + (bit.gy - by) * scale * tm;
+    const j = noise(bit.seed * 0.02, i * 0.1) - 0.5;
     point(px + j * 2.4, py - j * 2.4);
   }
 }

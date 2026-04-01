@@ -9,46 +9,76 @@
     * { box-sizing: border-box; }
     html, body {
       margin: 0;
-      min-height: 100%;
+      height: 100%;
       background: #ffffff;
       color: #111111;
       font-family: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
     }
-    #ui {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      padding: 16px 20px 20px;
-      background: linear-gradient(transparent, rgba(255, 255, 255, 0.97));
+    .app {
       display: flex;
-      flex-wrap: wrap;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 16px 24px;
+      min-height: 100%;
+      min-height: 100dvh;
+      align-items: stretch;
+    }
+    #control-panel {
+      width: min(100%, 300px);
+      flex-shrink: 0;
+      padding: 22px 20px 24px;
+      border-right: 1px solid #e2e2e4;
+      background: #fafafa;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      overflow-y: auto;
       z-index: 10;
-      font-family: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+    }
+    #control-panel h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      line-height: 1.25;
+    }
+    .panel-desc {
+      margin: 0;
+      font-size: 11px;
+      line-height: 1.55;
+      color: #3a3a40;
+      letter-spacing: 0.02em;
+    }
+    .panel-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .panel-section h2 {
+      margin: 0;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #6a6a72;
     }
     .preset-row {
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
       gap: 8px;
     }
     .preset-btn {
       margin: 0;
       font-family: inherit;
-      font-size: 11px;
+      font-size: 10px;
       letter-spacing: 0.1em;
       text-transform: uppercase;
-      padding: 8px 12px;
+      padding: 8px 11px;
       border: 1px solid #111;
       background: #fff;
       color: #111;
       cursor: pointer;
     }
     .preset-btn:hover {
-      background: #f4f4f4;
+      background: #f0f0f2;
     }
     .preset-btn:focus-visible {
       outline: 2px solid #111;
@@ -58,50 +88,140 @@
       background: #111;
       color: #fff;
     }
-    .ui-center {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 16px 24px;
-      margin-left: auto;
+    .slider-block label {
+      display: block;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #6a6a72;
+      margin-bottom: 6px;
     }
-    #ui label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.75; color: #111; }
-    #ui input[type="text"] {
-      min-width: 200px;
-      padding: 8px 12px;
+    .slider-block input[type="range"] {
+      width: 100%;
+      max-width: 100%;
+      accent-color: #111;
+    }
+    .color-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #444;
+    }
+    .color-row input[type="color"] {
+      width: 44px;
+      height: 32px;
+      padding: 0;
+      border: 1px solid #ccc;
+      cursor: pointer;
+      background: #fff;
+    }
+    .panel-footer {
+      margin-top: auto;
+      padding-top: 8px;
+      border-top: 1px solid #e8e8ea;
+      gap: 8px;
+    }
+    .download-btn {
+      width: 100%;
+      margin: 0;
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 10px 12px;
       border: 1px solid #111;
       background: #fff;
       color: #111;
-      font-family: inherit;
-      font-size: 13px;
+      cursor: pointer;
     }
-    #ui input[type="range"] { width: min(360px, 50vw); accent-color: #111; font-family: inherit; }
+    .download-btn:hover {
+      background: #111;
+      color: #fff;
+    }
+    .download-btn:focus-visible {
+      outline: 2px solid #111;
+      outline-offset: 2px;
+    }
     #sketch-host {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
       display: block;
-      width: 100%;
+      overflow: auto;
+      background: #fff;
     }
-    main { display: block; width: 100%; }
-    canvas { display: block; }
     #sketch-host canvas:focus-visible {
       outline: 2px solid #111;
-      outline-offset: 3px;
+      outline-offset: -2px;
+    }
+    @media (max-width: 720px) {
+      .app {
+        flex-direction: column;
+      }
+      #control-panel {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid #e2e2e4;
+        max-height: none;
+      }
+      .panel-footer {
+        flex-direction: row;
+        flex-wrap: wrap;
+      }
+      .download-btn {
+        flex: 1;
+        min-width: calc(50% - 4px);
+      }
     }
   </style>
 </head>
 <body>
-  <main id="sketch-host"></main>
-  <div id="ui">
-    <div class="preset-row" role="group" aria-label="Attention presets">
-      <button type="button" class="preset-btn" id="preset-absent" data-band="absent" data-attention="12">Absent</button>
-      <button type="button" class="preset-btn" id="preset-distracted" data-band="distracted" data-attention="48">Distracted</button>
-      <button type="button" class="preset-btn" id="preset-present" data-band="present" data-attention="100">Present</button>
-    </div>
-    <div class="ui-center">
-      <div>
-        <label for="attention">Attention axis</label><br />
-        <input type="range" id="attention" min="0" max="100" value="100" />
-      </div>
-    </div>
+  <div class="app">
+    <aside id="control-panel" aria-label="Controls">
+      <header>
+        <h1>Attention Type</h1>
+        <p class="panel-desc">
+          A variable typographic field where each letter is built from scattered 0s and 1s. Slide attention from present to absent:
+          the form holds together when focus is high and drifts apart when it fades—an analogy for how we see (or stop seeing) language when attention slips.
+        </p>
+      </header>
+
+      <section class="panel-section" aria-labelledby="attention-heading">
+        <h2 id="attention-heading">Attention</h2>
+        <div class="preset-row" role="group" aria-label="Attention presets">
+          <button type="button" class="preset-btn" id="preset-absent" data-band="absent" data-attention="12">Absent</button>
+          <button type="button" class="preset-btn" id="preset-distracted" data-band="distracted" data-attention="48">Distracted</button>
+          <button type="button" class="preset-btn" id="preset-present" data-band="present" data-attention="100">Present</button>
+        </div>
+        <div class="slider-block">
+          <label for="attention">Attention axis</label>
+          <input type="range" id="attention" min="0" max="100" value="100" />
+        </div>
+      </section>
+
+      <section class="panel-section" aria-labelledby="colors-heading">
+        <h2 id="colors-heading">Bit colors</h2>
+        <p class="panel-desc" style="margin-top: -4px;">Tint the 0 and 1 glyphs that make up each letter.</p>
+        <div class="color-row">
+          <span>0 bits</span>
+          <input type="color" id="color-bit-0" value="#1a1a22" aria-label="Color for zero bits" />
+        </div>
+        <div class="color-row">
+          <span>1 bits</span>
+          <input type="color" id="color-bit-1" value="#12121a" aria-label="Color for one bits" />
+        </div>
+      </section>
+
+      <section class="panel-section panel-footer" aria-label="Export">
+        <button type="button" class="download-btn" id="download-png">Download PNG</button>
+        <button type="button" class="download-btn" id="download-svg">Download SVG</button>
+      </section>
+    </aside>
+    <main id="sketch-host"></main>
   </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
   <script src="sketch.js"></script>
