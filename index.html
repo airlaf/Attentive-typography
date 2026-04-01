@@ -89,12 +89,20 @@
       color: #fff;
     }
     .slider-block label {
-      display: block;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
       font-size: 10px;
       letter-spacing: 0.12em;
       text-transform: uppercase;
       color: #6a6a72;
       margin-bottom: 6px;
+    }
+    .slider-block .slider-value {
+      letter-spacing: 0.06em;
+      color: #111;
+      font-variant-numeric: tabular-nums;
     }
     .slider-block input[type="range"] {
       width: 100%;
@@ -213,6 +221,14 @@
         <div class="color-row">
           <span>1 bits</span>
           <input type="color" id="color-bit-1" value="#12121a" aria-label="Color for one bits" />
+        </div>
+        <div class="color-row">
+          <span>Background</span>
+          <input type="color" id="color-background" value="#ffffff" aria-label="Canvas background color" />
+        </div>
+        <div class="slider-block" style="margin-top: 4px;">
+          <label for="type-size">Type size <span id="type-size-label" class="slider-value">100%</span></label>
+          <input type="range" id="type-size" min="50" max="150" value="100" step="1" aria-valuemin="50" aria-valuemax="150" aria-valuenow="100" aria-label="Type size" />
         </div>
       </section>
 

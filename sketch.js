@@ -113,6 +113,23 @@ function getBitColorsFromUI() {
   };
 }
 
+function getBackgroundHex() {
+  const el = document.getElementById("color-background");
+  const v = el && el.value ? el.value.trim() : "#ffffff";
+  return /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : "#ffffff";
+}
+
+function syncSketchHostBackground() {
+  const host = document.getElementById("sketch-host");
+  if (host) host.style.backgroundColor = getBackgroundHex();
+}
+
+/** 0 = black, 1 = white — for caret / hint / selection contrast. */
+function backgroundLuminance01() {
+  const { r, g, b } = parseHexColor(getBackgroundHex());
+  return constrain((0.299 * r + 0.587 * g + 0.114 * b) / 255, 0, 1);
+}
+
 /**
  * Shared 0/1 screen state for canvas draw and SVG export (same math as the live view).
  */
@@ -180,7 +197,8 @@ function escapeXml(s) {
 function buildExportSvgDocument() {
   if (!width || !height) return "";
   if (!bits.length) {
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n<rect width="100%" height="100%" fill="#ffffff"/>\n</svg>`;
+    const bg = getBackgroundHex();
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n<rect width="100%" height="100%" fill="${bg}"/>\n</svg>`;
   }
   const att = getAttention();
   const tm = trackingMul();
@@ -205,7 +223,8 @@ function buildExportSvgDocument() {
       `<g transform="${tr}"><text text-anchor="middle" dominant-baseline="central" font-weight="${st.weight}" font-size="${st.fontPx}" font-family="SF Mono, ui-monospace, Menlo, Monaco, Consolas, monospace" fill="rgba(${st.cr.toFixed(2)},${st.cg.toFixed(2)},${st.cb.toFixed(2)},${st.fillA.toFixed(4)})">${escapeXml(st.ch)}</text></g>`
     );
   }
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n<rect width="100%" height="100%" fill="#ffffff"/>\n${pieces.join("\n")}\n</svg>`;
+  const bgHex = getBackgroundHex();
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n<rect width="100%" height="100%" fill="${bgHex}"/>\n${pieces.join("\n")}\n</svg>`;
 }
 
 function downloadPng() {
@@ -500,8 +519,16 @@ function setup() {
 
   const colorBit0 = document.getElementById("color-bit-0");
   const colorBit1 = document.getElementById("color-bit-1");
+  const colorBg = document.getElementById("color-background");
   if (colorBit0) colorBit0.addEventListener("input", scheduleRedraw);
   if (colorBit1) colorBit1.addEventListener("input", scheduleRedraw);
+  if (colorBg) {
+    colorBg.addEventListener("input", () => {
+      syncSketchHostBackground();
+      scheduleRedraw();
+    });
+  }
+  syncSketchHostBackground();
   const pngBtn = document.getElementById("download-png");
   const svgBtn = document.getElementById("download-svg");
   if (pngBtn) pngBtn.addEventListener("click", downloadPng);
@@ -1018,7 +1045,8 @@ function drawSelectionHighlight(cx, cy, bx, by, scale, tm) {
   }
   const ctx2d = drawingContext;
   ctx2d.save();
-  ctx2d.fillStyle = "rgba(0, 120, 255, 0.28)";
+  const lum = backgroundLuminance01();
+  ctx2d.fillStyle = lum > 0.5 ? "rgba(0, 120, 255, 0.28)" : "rgba(130, 200, 255, 0.36)";
   const sortedRows = Array.from(byRow.keys()).sort((a, b) => a - b);
   for (const row of sortedRows) {
     const cols = byRow.get(row);
@@ -1060,7 +1088,9 @@ function drawTypingCaret(cx, cy, bx, by, scale, tm) {
   const lineH = CELL_H * scale * tm * 0.52;
   const ctx2d = drawingContext;
   ctx2d.save();
-  ctx2d.fillStyle = "rgb(20, 20, 22)";
+  const lum = backgroundLuminance01();
+  const [cr, cg, cb] = lum > 0.5 ? [20, 20, 22] : [248, 248, 252];
+  ctx2d.fillStyle = `rgb(${cr},${cg},${cb})`;
   const barW = max(1 / pixelDensity(), 0.75);
   const x0 = px - barW * 0.5;
   ctx2d.fillRect(x0, py - lineH * 0.5, barW, lineH);
@@ -1072,7 +1102,8 @@ function draw() {
   if (!width || !height) return;
 
   const att = getAttention();
-  background(255);
+  const bgRgb = parseHexColor(getBackgroundHex());
+  background(bgRgb.r, bgRgb.g, bgRgb.b);
 
   const tm = trackingMul();
   const scale = SCREEN_MASK_SCALE;
@@ -1092,7 +1123,11 @@ function draw() {
     if (!awaitingFirstEdit) {
       drawTypingCaret(cx, cy, bx, by, scale, tm);
     } else {
-      fill(90, 90, 95);
+      const lum = backgroundLuminance01();
+      const hr = lum > 0.5 ? 88 : 210;
+      const hg = lum > 0.5 ? 88 : 210;
+      const hb = lum > 0.5 ? 94 : 220;
+      fill(hr, hg, hb);
       noStroke();
       textAlign(CENTER, CENTER);
       textSize(14);
