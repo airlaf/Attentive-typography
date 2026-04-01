@@ -1,12 +1,24 @@
 /**
  * Attention Type — generative 0/1 letterforms on a single ATTENTION axis (100 → 0).
  */
+/* global webgazer */
 
 /** SF Mono on Apple; ui-monospace / Menlo / Monaco / Consolas elsewhere (not web-hosted). */
 const MONO_FONT_P5 = "SF Mono, Menlo, Monaco, Consolas, monospace";
 const MONO_FONT_CANVAS = '"SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace';
 
 let attentionInput;
+
+/** WebGazer: gaze drives attention when calibrated; manual slider otherwise. */
+let eyeTrackingActive = false;
+let eyeTrackingCalibrated = false;
+let gazeAttentionT = 1;
+let gazeTargetT = 1;
+/** Latest WebGazer sample in viewport px; null = no face / no prediction. */
+let lastGazeSample = null;
+/** performance.now() when sample arrived; used to treat stale predictions as absent. */
+let lastGazeAt = 0;
+const focusZone = { centerX: 0, centerY: 0, width: 1, height: 1 };
 /** Raw typed text (newlines = manual line breaks; width-wrap still applies per block). */
 const PLACEHOLDER_PHRASE = "Pay Attention to Me!";
 let phraseBuffer = PLACEHOLDER_PHRASE;
@@ -239,6 +251,7 @@ function buildExportSvgDocument() {
     return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n<rect width="100%" height="100%" fill="${bg}"/>\n</svg>`;
   }
   const att = getAttention();
+  const attGlyphs = getGlyphAttention(att);
   const tm = trackingMul();
   const scale = screenMaskScaleEffective();
   const m = layoutMargin();
@@ -250,12 +263,12 @@ function buildExportSvgDocument() {
   const rightCore = (maxX - bx) * scale * tm;
   cx = constrain(cx, m + leftCore, width - m - rightCore);
   const cy = top + (by - minY) * scale * tm;
-  const alphaNorm = layerAlpha(att) / 255;
+  const alphaNorm = layerAlphaForGlyphs(attGlyphs) / 255;
   const palettes = getBitPalettesFromUI();
   const deg = 180 / PI;
   const pieces = [];
   for (const b of bits) {
-    const st = computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, palettes);
+    const st = computeBitDrawState(b, attGlyphs, cx, cy, bx, by, scale, tm, alphaNorm, palettes);
     const tr = `translate(${st.px.toFixed(2)},${st.py.toFixed(2)}) rotate(${(st.rotAtt * deg).toFixed(4)}) scale(${st.sx.toFixed(4)},${st.sy.toFixed(4)})`;
     pieces.push(
       `<g transform="${tr}"><text text-anchor="middle" dominant-baseline="central" font-weight="${st.weight}" font-size="${st.fontPx}" font-family="SF Mono, ui-monospace, Menlo, Monaco, Consolas, monospace" fill="rgba(${st.cr.toFixed(2)},${st.cg.toFixed(2)},${st.cb.toFixed(2)},${st.fillA.toFixed(4)})">${escapeXml(st.ch)}</text></g>`
@@ -289,7 +302,437 @@ function downloadSvg() {
 }
 
 function getAttention() {
+  if (eyeTrackingActive && eyeTrackingCalibrated) {
+    return constrain(gazeAttentionT * 100, 0, 100);
+  }
   return attentionInput ? Number(attentionInput.value) : 100;
+}
+
+/**
+ * Eye-tracking only: pull effective attention down vs raw gaze so drift/opacity react harder when distracted.
+ * Manual slider unchanged (caller passes att through unchanged when not eye mode).
+ */
+function getGlyphAttention(att) {
+  if (!eyeTrackingActive || !eyeTrackingCalibrated) return att;
+  const a = constrain(att, 0, 100);
+  return 100 * pow(a / 100, 1.35);
+}
+
+/** Layer alpha for bits — wider fade range when gaze-driven so “away” reads clearly. */
+function layerAlphaForGlyphs(att) {
+  const a = constrain(att, 0, 100);
+  const t = smoothstep(0, 100, a);
+  if (eyeTrackingActive && eyeTrackingCalibrated) {
+    return map(t, 0, 1, 118, 255);
+  }
+  return map(t, 0, 1, 228, 255);
+}
+
+function updateFocusZoneScreen(cx, cy, bx, by, scale, tm) {
+  const canvas = phraseCanvasElt;
+  if (!canvas || !width || !height) {
+    focusZone.centerX = window.innerWidth * 0.5;
+    focusZone.centerY = window.innerHeight * 0.5;
+    focusZone.width = 200;
+    focusZone.height = 120;
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  if (!bits.length) {
+    focusZone.centerX = rect.left + rect.width * 0.5;
+    focusZone.centerY = rect.top + rect.height * 0.5;
+    focusZone.width = rect.width * 0.25;
+    focusZone.height = rect.height * 0.2;
+    return;
+  }
+  const { minX, minY, maxX, maxY } = maskBounds;
+  const leftC = cx + (minX - bx) * scale * tm;
+  const rightC = cx + (maxX - bx) * scale * tm;
+  const topC = cy + (minY - by) * scale * tm;
+  const bottomC = cy + (maxY - by) * scale * tm;
+  const midX = (leftC + rightC) * 0.5;
+  const midY = (topC + bottomC) * 0.5;
+  focusZone.centerX = rect.left + (midX / width) * rect.width;
+  focusZone.centerY = rect.top + (midY / height) * rect.height;
+  focusZone.width = (abs(rightC - leftC) / width) * rect.width;
+  focusZone.height = (abs(bottomC - topC) / height) * rect.height;
+}
+
+/**
+ * Map gaze → attention 0…1: generous padded box on 0/1 text = present (1); rest of viewport = softer distracted;
+ * stale tracking, bezel band, or off-window = absent (~0). Tuned forgivingly so small gaze error still reads as on-type.
+ */
+function computeGazeAttentionTarget(sample, zone) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const now = performance.now();
+  const staleMs = 400;
+
+  if (!sample || !Number.isFinite(sample.x) || !Number.isFinite(sample.y)) {
+    return 0;
+  }
+  if (lastGazeAt <= 0 || now - lastGazeAt > staleMs) {
+    return 0;
+  }
+
+  const x = sample.x;
+  const y = sample.y;
+
+  const offMargin = 40;
+  if (x < -offMargin || y < -offMargin || x > vw + offMargin || y > vh + offMargin) {
+    return 0;
+  }
+
+  const canvas = phraseCanvasElt;
+  const screenScale = canvas && width > 0 ? canvas.getBoundingClientRect().width / width : 1;
+  const halfW = max(zone.width * 0.5, 52);
+  const halfH = max(zone.height * 0.5, 40);
+  const driftPad = maxDriftScreenPx(100) * screenScale * 0.16 + 14;
+  const fracPadX = max(halfW * 0.12, 18);
+  const fracPadY = max(halfH * 0.12, 14);
+  const padX = fracPadX + driftPad;
+  const padY = fracPadY + driftPad;
+
+  const left = zone.centerX - halfW - padX;
+  const right = zone.centerX + halfW + padX;
+  const top = zone.centerY - halfH - padY;
+  const bottom = zone.centerY + halfH + padY;
+
+  const onTypography = x >= left && x <= right && y >= top && y <= bottom;
+  if (onTypography) {
+    return 1;
+  }
+
+  const edgeBand = 56;
+  const inViewport = x >= 0 && x <= vw && y >= 0 && y <= vh;
+  if (inViewport) {
+    const nearPerimeter =
+      x < edgeBand || x > vw - edgeBand || y < edgeBand || y > vh - edgeBand;
+    if (nearPerimeter) {
+      return 0.22;
+    }
+    return 0.68;
+  }
+
+  return 0.06;
+}
+
+function setAttentionControlsDisabled(disabled) {
+  const sliderBlock = document.getElementById("attention-slider-block");
+  const presets = document.getElementById("attention-preset-row");
+  if (attentionInput) attentionInput.disabled = disabled;
+  if (sliderBlock) sliderBlock.classList.toggle("is-disabled", disabled);
+  if (presets) presets.classList.toggle("is-disabled", disabled);
+}
+
+function showEyeTrackingError() {
+  const el = document.getElementById("eye-tracking-error");
+  if (el) el.classList.add("is-visible");
+}
+
+function hideEyeTrackingError() {
+  const el = document.getElementById("eye-tracking-error");
+  if (el) el.classList.remove("is-visible");
+}
+
+function updateGazeStatusDisplay() {
+  const el = document.getElementById("gaze-attention-status");
+  if (!el) return;
+  el.classList.remove("gaze-st-present", "gaze-st-distracted", "gaze-st-absent", "is-visible");
+  if (!eyeTrackingActive || !eyeTrackingCalibrated) {
+    el.textContent = "";
+    return;
+  }
+  el.classList.add("is-visible");
+  const t = gazeAttentionT;
+  const a = t * 100;
+  if (a >= 65) {
+    el.textContent = "● PRESENT";
+    el.classList.add("gaze-st-present");
+  } else if (a >= 30) {
+    el.textContent = "● DISTRACTED";
+    el.classList.add("gaze-st-distracted");
+  } else {
+    el.textContent = "● ABSENT";
+    el.classList.add("gaze-st-absent");
+  }
+}
+
+function cleanupWebGazerResources() {
+  try {
+    if (typeof webgazer !== "undefined") {
+      webgazer.clearGazeListener();
+      webgazer.pause();
+    }
+    const v = document.getElementById("webgazerVideoFeed");
+    if (v && v.srcObject) {
+      v.srcObject.getTracks().forEach((t) => t.stop());
+      v.srcObject = null;
+    }
+    ["webgazerVideoContainer", "webgazerGazeDot"].forEach((id) => {
+      const node = document.getElementById(id);
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+    });
+  } catch (e) {
+    /* ignore teardown errors */
+  }
+}
+
+function closeCalibrationOverlay() {
+  const overlay = document.getElementById("webgazer-calibration-overlay");
+  if (!overlay) return;
+  overlay.classList.remove("is-open");
+  overlay.setAttribute("aria-hidden", "true");
+}
+
+function openCalibrationOverlay() {
+  const overlay = document.getElementById("webgazer-calibration-overlay");
+  if (!overlay) return;
+  overlay.querySelectorAll(".wg-cal-dot").forEach((d) => d.classList.remove("is-done"));
+  overlay.classList.add("is-open");
+  overlay.setAttribute("aria-hidden", "false");
+}
+
+function finishEyeCalibration() {
+  closeCalibrationOverlay();
+  eyeTrackingCalibrated = true;
+  const v = attentionInput ? Number(attentionInput.value) : 100;
+  const t0 = constrain(Number.isFinite(v) ? v / 100 : 1, 0, 1);
+  gazeAttentionT = t0;
+  gazeTargetT = t0;
+  lastGazeSample = null;
+  lastGazeAt = 0;
+  if (typeof webgazer !== "undefined" && webgazer.setGazeListener) {
+    webgazer.setGazeListener((data, _timestamp) => {
+      if (!eyeTrackingActive || !eyeTrackingCalibrated) return;
+      if (!data) {
+        lastGazeSample = null;
+        lastGazeAt = 0;
+        return;
+      }
+      lastGazeSample = { x: data.x, y: data.y };
+      lastGazeAt = performance.now();
+    });
+  }
+  if (typeof webgazer !== "undefined" && webgazer.showPredictionPoints) {
+    webgazer.showPredictionPoints(true);
+  }
+  if (typeof webgazer !== "undefined" && webgazer.showVideoPreview) {
+    webgazer.showVideoPreview(true);
+    if (typeof webgazer.showFaceOverlay === "function") webgazer.showFaceOverlay(true);
+  }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => layoutWebGazerVideoCorner());
+  });
+  setTimeout(layoutWebGazerVideoCorner, 400);
+  updateGazeStatusDisplay();
+  loop();
+}
+
+function onCalibrationDotClick(evt) {
+  const btn = evt.currentTarget;
+  if (!btn || btn.classList.contains("is-done")) return;
+  const r = btn.getBoundingClientRect();
+  const cx = r.left + r.width * 0.5;
+  const cy = r.top + r.height * 0.5;
+  if (typeof webgazer !== "undefined" && webgazer.recordScreenPosition) {
+    webgazer.recordScreenPosition(cx, cy, "click");
+  }
+  btn.classList.add("is-done");
+  const grid = document.getElementById("wg-cal-grid");
+  const total = grid ? grid.querySelectorAll(".wg-cal-dot").length : 9;
+  const done = grid ? grid.querySelectorAll(".wg-cal-dot.is-done").length : 0;
+  if (done >= total) finishEyeCalibration();
+}
+
+function resetEyeTrackingUiOff() {
+  eyeTrackingActive = false;
+  eyeTrackingCalibrated = false;
+  lastGazeSample = null;
+  lastGazeAt = 0;
+  cleanupWebGazerResources();
+  closeCalibrationOverlay();
+  hideEyeTrackingError();
+  setAttentionControlsDisabled(false);
+  const toggleBtn = document.getElementById("toggle-eye-tracking");
+  if (toggleBtn) {
+    toggleBtn.classList.remove("is-active");
+    toggleBtn.textContent = toggleBtn.dataset.labelOff || "Start eye tracking";
+    toggleBtn.setAttribute("aria-pressed", "false");
+  }
+  updateGazeStatusDisplay();
+  noLoop();
+  updatePresetButtons();
+  redraw();
+}
+
+const WEBGAZER_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/webgazer@2.1.0/dist/webgazer.min.js";
+let webgazerLoadPromise = null;
+
+/** Pin WebGazer’s webcam + face mesh overlay to the top-right; keep wireframe visible. */
+function layoutWebGazerVideoCorner() {
+  let s = document.getElementById("webgazer-preview-corner-style");
+  if (!s) {
+    s = document.createElement("style");
+    s.id = "webgazer-preview-corner-style";
+    s.textContent = `
+#webgazerVideoContainer {
+  position: fixed !important;
+  top: 12px !important;
+  right: 12px !important;
+  left: auto !important;
+  bottom: auto !important;
+  z-index: 150000 !important;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+  background: #0a0a0c;
+}
+`;
+    document.head.appendChild(s);
+  }
+  const c = document.getElementById("webgazerVideoContainer");
+  if (c) {
+    c.style.top = "12px";
+    c.style.right = "12px";
+    c.style.left = "auto";
+    c.style.bottom = "auto";
+  }
+  if (typeof webgazer !== "undefined" && typeof webgazer.setVideoViewerSize === "function") {
+    webgazer.setVideoViewerSize(300, 225);
+  }
+}
+
+/** Kalman + frequent samples; no CSS transform easing so the dot stays close to WebGazer’s estimate. */
+function applyWebGazerStabilityTuning() {
+  if (typeof webgazer === "undefined") return;
+  try {
+    if (typeof webgazer.applyKalmanFilter === "function") {
+      webgazer.applyKalmanFilter(true);
+    }
+    if (webgazer.params) {
+      webgazer.params.applyKalmanFilter = true;
+      webgazer.params.dataTimestep = 42;
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  let s = document.getElementById("webgazer-dot-smooth-style");
+  if (!s) {
+    s = document.createElement("style");
+    s.id = "webgazer-dot-smooth-style";
+    document.head.appendChild(s);
+  }
+  s.textContent = "#webgazerGazeDot{transition:none!important;will-change:transform;}";
+}
+
+/** Load WebGazer only on demand so a CDN/parse failure never blocks the main sketch. */
+function loadWebGazerScript() {
+  if (typeof webgazer !== "undefined") return Promise.resolve();
+  if (webgazerLoadPromise) return webgazerLoadPromise;
+  webgazerLoadPromise = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = WEBGAZER_SCRIPT_URL;
+    s.async = true;
+    s.dataset.attentionWebgazer = "1";
+    s.onload = () => {
+      if (typeof webgazer !== "undefined") resolve();
+      else {
+        webgazerLoadPromise = null;
+        reject(new Error("WebGazer global missing after load"));
+      }
+    };
+    s.onerror = () => {
+      webgazerLoadPromise = null;
+      reject(new Error("Could not load WebGazer script"));
+    };
+    document.head.appendChild(s);
+  });
+  return webgazerLoadPromise;
+}
+
+async function startEyeTrackingFlow() {
+  hideEyeTrackingError();
+  const toggleBtn = document.getElementById("toggle-eye-tracking");
+  if (toggleBtn) toggleBtn.disabled = true;
+  if (toggleBtn) toggleBtn.textContent = "Loading WebGazer…";
+  try {
+    await loadWebGazerScript();
+  } catch (e) {
+    console.warn(e);
+    showEyeTrackingError();
+    if (toggleBtn) {
+      toggleBtn.disabled = false;
+      toggleBtn.textContent = toggleBtn.dataset.labelOff || "Start eye tracking";
+    }
+    return;
+  }
+  eyeTrackingActive = true;
+  eyeTrackingCalibrated = false;
+  setAttentionControlsDisabled(true);
+  if (toggleBtn) {
+    toggleBtn.classList.add("is-active");
+    toggleBtn.textContent = toggleBtn.dataset.labelOn || "Stop eye tracking";
+    toggleBtn.setAttribute("aria-pressed", "true");
+  }
+  try {
+    applyWebGazerStabilityTuning();
+    const begun = webgazer.begin();
+    if (begun && typeof begun.then === "function") await begun;
+    applyWebGazerStabilityTuning();
+    webgazer.showVideoPreview(true);
+    if (typeof webgazer.showFaceOverlay === "function") webgazer.showFaceOverlay(true);
+    webgazer.showPredictionPoints(true);
+    if (webgazer.removeMouseEventListeners) webgazer.removeMouseEventListeners();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => layoutWebGazerVideoCorner());
+    });
+    setTimeout(layoutWebGazerVideoCorner, 500);
+    openCalibrationOverlay();
+  } catch (e) {
+    console.warn(e);
+    resetEyeTrackingUiOff();
+    showEyeTrackingError();
+  } finally {
+    if (toggleBtn) toggleBtn.disabled = false;
+  }
+}
+
+function setupEyeTrackingUi() {
+  if (setupEyeTrackingUi._didBind) return;
+  setupEyeTrackingUi._didBind = true;
+  const grid = document.getElementById("wg-cal-grid");
+  if (grid && !grid.querySelector(".wg-cal-dot")) {
+    for (let i = 0; i < 9; i++) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "wg-cal-dot";
+      b.setAttribute("aria-label", `Calibration point ${i + 1} of 9`);
+      b.addEventListener("click", onCalibrationDotClick);
+      grid.appendChild(b);
+    }
+  }
+  const toggleBtn = document.getElementById("toggle-eye-tracking");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      if (eyeTrackingActive) resetEyeTrackingUiOff();
+      else startEyeTrackingFlow();
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const overlay = document.getElementById("webgazer-calibration-overlay");
+    if (!overlay || !overlay.classList.contains("is-open")) return;
+    resetEyeTrackingUiOff();
+  });
+  window.addEventListener("beforeunload", () => {
+    try {
+      if (typeof webgazer !== "undefined" && webgazer.end) webgazer.end();
+    } catch (err) {
+      /* ignore */
+    }
+    cleanupWebGazerResources();
+  });
 }
 
 function stopCaretBlink() {
@@ -541,13 +984,16 @@ function setup() {
 
   attentionInput = document.getElementById("attention");
 
-  attentionInput.addEventListener("input", () => {
-    updatePresetButtons();
-    scheduleRedraw();
-  });
+  if (attentionInput) {
+    attentionInput.addEventListener("input", () => {
+      updatePresetButtons();
+      scheduleRedraw();
+    });
+  }
 
   document.querySelectorAll(".preset-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
+      if (!attentionInput || attentionInput.disabled) return;
       const v = Number(btn.getAttribute("data-attention"));
       if (!Number.isFinite(v)) return;
       attentionInput.value = String(constrain(v, 0, 100));
@@ -659,6 +1105,8 @@ function setup() {
       redraw();
     });
   }
+
+  redraw();
 }
 
 function updatePresetButtons() {
@@ -1022,13 +1470,17 @@ function driftAmount(att) {
   const a = constrain(att, 0, 100);
   const inv = 1 - smoothstep(0, 100, a);
   const invEase = inv * inv * inv;
-  return map(invEase, 0, 1, 0.06, 1.85);
+  const cap = eyeTrackingActive && eyeTrackingCalibrated ? 2.45 : 1.85;
+  return map(invEase, 0, 1, 0.06, cap);
 }
 
 /** Scatter factor 0 = calm, 1 = max offset (scaled down in draw). */
 function scatterFactor(att) {
   const a = constrain(att, 0, 100);
   const inv = 1 - smoothstep(0, 100, a);
+  if (eyeTrackingActive && eyeTrackingCalibrated) {
+    return inv * inv * inv;
+  }
   return inv * inv * inv * inv;
 }
 
@@ -1057,7 +1509,7 @@ function bitGlyphOpacity(att, ch, seed) {
   const u = (seed * 0.001) % 1;
   const a = constrain(att, 0, 100);
   const t = smoothstep(0, 100, a);
-  const floor = BIT_OPACITY_FLOOR;
+  const floor = eyeTrackingActive && eyeTrackingCalibrated ? 0.44 : BIT_OPACITY_FLOOR;
   const span = 1 - floor;
   let o = floor + span * t;
   const zeroEase = ch === "0" ? 0.94 + 0.06 * t : 1;
@@ -1197,10 +1649,6 @@ function draw() {
   if (!fontReady) return;
   if (!width || !height) return;
 
-  const att = getAttention();
-  const bgRgb = parseHexColor(getBackgroundHex());
-  background(bgRgb.r, bgRgb.g, bgRgb.b);
-
   const tm = trackingMul();
   const scale = screenMaskScaleEffective();
   const m = layoutMargin();
@@ -1212,7 +1660,30 @@ function draw() {
   const rightCore = (maxX - bx) * scale * tm;
   cx = constrain(cx, m + leftCore, width - m - rightCore);
   const cy = top + (by - minY) * scale * tm;
-  const alpha = layerAlpha(att);
+
+  updateFocusZoneScreen(cx, cy, bx, by, scale, tm);
+  if (eyeTrackingActive && eyeTrackingCalibrated) {
+    gazeTargetT = computeGazeAttentionTarget(lastGazeSample, focusZone);
+    const d = gazeTargetT - gazeAttentionT;
+    const rateUp = 0.055;
+    const rateDown = 0.14;
+    const maxStepUp = 0.018;
+    if (d > 0) {
+      gazeAttentionT += min(d * rateUp, maxStepUp);
+    } else {
+      gazeAttentionT += d * rateDown;
+    }
+    gazeAttentionT = constrain(gazeAttentionT, 0, 1);
+    if (attentionInput) attentionInput.value = String(round(gazeAttentionT * 100));
+    updatePresetButtons();
+  }
+  updateGazeStatusDisplay();
+
+  const att = getAttention();
+  const attGlyphs = getGlyphAttention(att);
+  const bgRgb = parseHexColor(getBackgroundHex());
+  background(bgRgb.r, bgRgb.g, bgRgb.b);
+  const alpha = layerAlphaForGlyphs(attGlyphs);
 
   if (bits.length === 0) {
     if (!awaitingFirstEdit) {
@@ -1241,7 +1712,7 @@ function draw() {
   const alphaNorm = alpha / 255;
   noStroke();
   for (const b of bits) {
-    const st = computeBitDrawState(b, att, cx, cy, bx, by, scale, tm, alphaNorm, palettes);
+    const st = computeBitDrawState(b, attGlyphs, cx, cy, bx, by, scale, tm, alphaNorm, palettes);
     ctx2d.save();
     ctx2d.translate(st.px, st.py);
     ctx2d.rotate(st.rotAtt);
@@ -1254,7 +1725,7 @@ function draw() {
   }
 
   if (bits.length) {
-    drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, palettes);
+    drawGhostTraces(cx, cy, bx, by, scale, tm, attGlyphs, alpha, palettes);
   }
 
   drawTypingCaret(cx, cy, bx, by, scale, tm);
@@ -1263,7 +1734,8 @@ function draw() {
 /** Faint residual strokes — ramps in softly as attention drops. */
 function drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, bitPalettes) {
   const a = constrain(att, 0, 100);
-  const ghostAmt = (1 - smoothstep(0, 100, a)) ** 3;
+  const exp = eyeTrackingActive && eyeTrackingCalibrated ? 2.1 : 3;
+  const ghostAmt = (1 - smoothstep(0, 100, a)) ** exp;
   if (ghostAmt < 0.002) return;
   let r = 0;
   let gc = 0;
@@ -1287,3 +1759,14 @@ function drawGhostTraces(cx, cy, bx, by, scale, tm, att, alpha, bitPalettes) {
     point(px + j * 2.4, py - j * 2.4);
   }
 }
+
+(function bindEyeTrackingWhenDomReady() {
+  function go() {
+    setupEyeTrackingUi();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", go);
+  } else {
+    go();
+  }
+})();

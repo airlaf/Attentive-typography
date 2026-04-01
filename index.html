@@ -23,14 +23,25 @@
     #control-panel {
       width: min(100%, 300px);
       flex-shrink: 0;
-      padding: 22px 20px 24px;
+      padding: 24px 20px 28px;
       border-right: 1px solid #e2e2e4;
       background: #fafafa;
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 32px;
       overflow-y: auto;
       z-index: 10;
+      font-family: "SF Mono", ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+    }
+    #control-panel input,
+    #control-panel button,
+    #control-panel label {
+      font-family: inherit;
+    }
+    #control-panel > header {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
     }
     #control-panel h1 {
       margin: 0;
@@ -50,7 +61,12 @@
     .panel-section {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 14px;
+    }
+    .type-size-block {
+      margin-top: 8px;
+      padding-top: 22px;
+      border-top: 1px solid #e4e4e8;
     }
     .panel-section h2 {
       margin: 0;
@@ -233,6 +249,207 @@
       outline: 2px solid #111;
       outline-offset: -2px;
     }
+    .eye-track-toggle {
+      margin: 0;
+      width: 100%;
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 10px 12px;
+      border: 1px solid #111;
+      background: #fff;
+      color: #111;
+      cursor: pointer;
+    }
+    .eye-track-toggle:hover {
+      background: #f0f0f2;
+    }
+    .eye-track-toggle:focus-visible {
+      outline: 2px solid #111;
+      outline-offset: 2px;
+    }
+    .eye-track-toggle.is-active {
+      background: #111;
+      color: #fff;
+    }
+    .eye-tracking-error {
+      margin: 0;
+      font-size: 10px;
+      line-height: 1.45;
+      color: #8b2942;
+      letter-spacing: 0.02em;
+      display: none;
+    }
+    .eye-tracking-error.is-visible {
+      display: block;
+    }
+    .slider-block.is-disabled label,
+    .slider-block.is-disabled .slider-value {
+      color: #9a9aa0;
+    }
+    .slider-block.is-disabled input[type="range"] {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    .preset-row.is-disabled .preset-btn {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    #webgazer-calibration-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 200000;
+      display: none;
+      background: rgba(10, 10, 12, 0.88);
+      backdrop-filter: blur(6px);
+      /* Room so bottom-row dots sit above the floating hint bar */
+      --wg-cal-bottom-band: max(58px, calc(env(safe-area-inset-bottom, 0px) + 50px));
+    }
+    #webgazer-calibration-overlay.is-open {
+      display: block;
+    }
+    /* One line at bottom—does not consume vertical space, so top dots can use the real top edge */
+    .wg-cal-hint {
+      position: absolute;
+      z-index: 2;
+      bottom: max(10px, env(safe-area-inset-bottom, 0px));
+      left: 50%;
+      transform: translateX(-50%);
+      margin: 0;
+      padding: 8px 14px;
+      max-width: min(92vw, 36rem);
+      text-align: center;
+      font-size: 10px;
+      line-height: 1.35;
+      letter-spacing: 0.03em;
+      color: #e8e8ee;
+      background: rgba(6, 6, 10, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+      pointer-events: none;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    }
+    /* Full viewport: dots use entire screen; hint floats over bottom center */
+    .wg-cal-grid {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      box-sizing: border-box;
+    }
+    .wg-cal-grid .wg-cal-dot {
+      position: absolute;
+      margin: 0;
+      transform: translate(-50%, -50%);
+      width: clamp(30px, 5vmin, 40px);
+      height: clamp(30px, 5vmin, 40px);
+    }
+    /* Row 1 — true top edge (no header above this layer) */
+    .wg-cal-grid .wg-cal-dot:nth-child(1) {
+      left: clamp(10px, 2.2vw, 28px);
+      top: clamp(6px, 1.5vh, 22px);
+    }
+    .wg-cal-grid .wg-cal-dot:nth-child(2) {
+      left: 50%;
+      top: clamp(6px, 1.5vh, 22px);
+    }
+    .wg-cal-grid .wg-cal-dot:nth-child(3) {
+      left: calc(100% - clamp(10px, 2.2vw, 28px));
+      top: clamp(6px, 1.5vh, 22px);
+    }
+    /* Row 2 — vertical middle, horizontal extremes + center */
+    .wg-cal-grid .wg-cal-dot:nth-child(4) {
+      left: clamp(10px, 2.2vw, 28px);
+      top: 50%;
+    }
+    .wg-cal-grid .wg-cal-dot:nth-child(5) {
+      left: 50%;
+      top: 50%;
+    }
+    .wg-cal-grid .wg-cal-dot:nth-child(6) {
+      left: calc(100% - clamp(10px, 2.2vw, 28px));
+      top: 50%;
+    }
+    /* Row 3 — bottom edge, cleared of floating hint pill */
+    .wg-cal-grid .wg-cal-dot:nth-child(7) {
+      left: clamp(10px, 2.2vw, 28px);
+      top: calc(100% - var(--wg-cal-bottom-band));
+    }
+    .wg-cal-grid .wg-cal-dot:nth-child(8) {
+      left: 50%;
+      top: calc(100% - var(--wg-cal-bottom-band));
+    }
+    .wg-cal-grid .wg-cal-dot:nth-child(9) {
+      left: calc(100% - clamp(10px, 2.2vw, 28px));
+      top: calc(100% - var(--wg-cal-bottom-band));
+    }
+    .wg-cal-dot {
+      width: clamp(30px, 5vmin, 40px);
+      height: clamp(30px, 5vmin, 40px);
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.9);
+      background: radial-gradient(circle at 35% 35%, #fff 0%, #b8b8c8 40%, #606070 100%);
+      cursor: pointer;
+      padding: 0;
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.12);
+    }
+    .wg-cal-dot:hover {
+      box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.2);
+    }
+    .wg-cal-dot:focus-visible {
+      outline: 2px solid #fff;
+      outline-offset: 4px;
+    }
+    .wg-cal-dot.is-done {
+      opacity: 0.35;
+      pointer-events: none;
+    }
+    #gaze-attention-status {
+      position: fixed;
+      z-index: 50000;
+      bottom: 16px;
+      right: 16px;
+      margin: 0;
+      padding: 8px 12px;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border-radius: 2px;
+      pointer-events: none;
+      display: none;
+      background: rgba(0, 0, 0, 0.55);
+      max-width: min(300px, calc(100vw - 32px));
+      line-height: 1.35;
+      text-align: right;
+      hyphens: auto;
+    }
+    #gaze-attention-status.is-visible {
+      display: block;
+    }
+    #gaze-attention-status.gaze-st-present {
+      color: #ffffff;
+    }
+    #gaze-attention-status.gaze-st-distracted {
+      color: #e8a838;
+    }
+    #gaze-attention-status.gaze-st-absent {
+      color: #c44a4a;
+    }
+    .eye-tracking-section {
+      padding: 16px 14px 18px;
+      background: #f0f1f5;
+      border: 1px solid #d8d8e0;
+      border-radius: 8px;
+      gap: 14px;
+    }
+    .eye-tracking-section h2 {
+      color: #3a3a44;
+    }
+    .eye-tracking-section .panel-desc {
+      margin-bottom: 0;
+    }
     @media (max-width: 720px) {
       .app {
         flex-direction: column;
@@ -252,27 +469,46 @@
       <header>
         <h1>Attention Type</h1>
         <p class="panel-desc">
-          A variable typographic field where each letter is built from scattered 0s and 1s. Slide attention from present to absent:
-          the form holds together when focus is high and drifts apart when it fades—an analogy for how we see (or stop seeing) language when attention slips.
+          A variable typeface made entirely out of binary code that physically responds to where your attention is. At full focus, the letterforms are dense and legible. But as attention drifts, the characters loosen and scatter. It’s a reflection of what reading has become in the age of scrolling and constant consumption.
         </p>
       </header>
 
       <section class="panel-section" aria-labelledby="attention-heading">
         <h2 id="attention-heading">Attention</h2>
-        <div class="preset-row" role="group" aria-label="Attention presets">
+        <div class="preset-row" id="attention-preset-row" role="group" aria-label="Attention presets">
           <button type="button" class="preset-btn" id="preset-absent" data-band="absent" data-attention="12">Absent</button>
           <button type="button" class="preset-btn" id="preset-distracted" data-band="distracted" data-attention="48">Distracted</button>
           <button type="button" class="preset-btn" id="preset-present" data-band="present" data-attention="100">Present</button>
         </div>
-        <div class="slider-block">
+        <div class="slider-block" id="attention-slider-block">
           <label for="attention">Attention axis</label>
           <input type="range" id="attention" min="0" max="100" value="100" />
         </div>
       </section>
 
+      <section class="panel-section eye-tracking-section" aria-labelledby="eye-tracking-heading">
+        <h2 id="eye-tracking-heading">Eye tracking (WebGazer)</h2>
+        <p class="panel-desc">
+          Turn this on to track your attention span when reading.
+        </p>
+        <button
+          type="button"
+          class="eye-track-toggle"
+          id="toggle-eye-tracking"
+          aria-pressed="false"
+          data-label-off="Start eye tracking"
+          data-label-on="Stop eye tracking"
+        >
+          Start eye tracking
+        </button>
+        <p class="eye-tracking-error" id="eye-tracking-error" role="alert">
+          Eye tracking unavailable — use the attention slider instead.
+        </p>
+      </section>
+
       <section class="panel-section" aria-labelledby="colors-heading">
         <h2 id="colors-heading">Bit colors</h2>
-        <p class="panel-desc" style="margin-top: -4px;">Tint the 0 and 1 glyphs. Use + for up to two extra color pairs—bits pick a pair by position.</p>
+        <p class="panel-desc">Adjust colors for binary code</p>
         <div id="bit-palette-rows" class="bit-palette-stack">
           <div class="bit-palette-row bit-palette-row--primary">
             <span class="bit-swatch-label">0</span>
@@ -286,14 +522,14 @@
           <span>Background</span>
           <input type="color" id="color-background" value="#ffffff" aria-label="Canvas background color" />
         </div>
-        <div class="slider-block" style="margin-top: 4px;">
+        <div class="slider-block type-size-block">
           <label for="type-size">Type size <span id="type-size-label" class="slider-value">100%</span></label>
           <input type="range" id="type-size" min="50" max="150" value="100" step="1" aria-valuemin="50" aria-valuemax="150" aria-valuenow="100" aria-label="Type size" />
         </div>
       </section>
 
       <section class="panel-section panel-footer" aria-label="Export">
-        <p class="download-as-label">download as</p>
+        <p class="download-as-label">Download as</p>
         <div class="download-row" role="group" aria-label="Download format">
           <button type="button" class="download-btn" id="download-png" aria-label="Download as PNG">png</button>
           <button type="button" class="download-btn" id="download-svg" aria-label="Download as SVG">svg</button>
@@ -301,6 +537,11 @@
       </section>
     </aside>
     <main id="sketch-host"></main>
+  </div>
+  <p id="gaze-attention-status" aria-live="polite"></p>
+  <div id="webgazer-calibration-overlay" aria-hidden="true">
+    <div class="wg-cal-grid" id="wg-cal-grid" role="group" aria-label="Nine calibration dots on screen edges and center"></div>
+    <p class="wg-cal-hint">Look at each dot, then click it—any order.</p>
   </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
   <script src="sketch.js"></script>
