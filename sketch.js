@@ -124,8 +124,6 @@ let phraseDebounceId = 0;
 let redrawRafId = 0;
 let resizeLayoutRafId = 0;
 
-/** ~30fps redraw while gaze is active — avoids p5 loop() at 60fps over thousands of glyphs. */
-let eyeTrackingRedrawIntervalId = 0;
 /** Skip redundant gaze chip DOM writes. */
 let lastGazeStatusKey = "";
 /** Cache panel colors between UI edits (draw hot path). */
@@ -151,20 +149,6 @@ function getCachedPalettesForDraw() {
 function getCachedBgRgbForDraw() {
   if (!drawStyleCacheValid) refreshDrawStyleCache();
   return cachedBgRgbDraw;
-}
-
-function startEyeTrackingRedrawLoop() {
-  stopEyeTrackingRedrawLoop();
-  eyeTrackingRedrawIntervalId = window.setInterval(() => {
-    if (eyeTrackingActive && eyeTrackingCalibrated) redraw();
-  }, 33);
-}
-
-function stopEyeTrackingRedrawLoop() {
-  if (eyeTrackingRedrawIntervalId) {
-    clearInterval(eyeTrackingRedrawIntervalId);
-    eyeTrackingRedrawIntervalId = 0;
-  }
 }
 
 /** Width of the main canvas column (right of the control panel). */
@@ -580,15 +564,17 @@ function finishEyeCalibration() {
     webgazer.showPredictionPoints(true);
   }
   if (typeof webgazer !== "undefined" && webgazer.showVideoPreview) {
+    disableWebGazerFaceUi();
     webgazer.showVideoPreview(true);
-    if (typeof webgazer.showFaceOverlay === "function") webgazer.showFaceOverlay(true);
+    disableWebGazerFaceUi();
   }
   requestAnimationFrame(() => {
     requestAnimationFrame(() => layoutWebGazerVideoCorner());
   });
   setTimeout(layoutWebGazerVideoCorner, 400);
   updateGazeStatusDisplay();
-  startEyeTrackingRedrawLoop();
+  /* Gaze smoothing runs inside draw(); must loop at display rate or attention feels ~2× sluggish vs ~30fps cap. */
+  loop();
   redraw();
 }
 
@@ -609,7 +595,6 @@ function onCalibrationDotClick(evt) {
 }
 
 function resetEyeTrackingUiOff() {
-  stopEyeTrackingRedrawLoop();
   eyeTrackingActive = false;
   eyeTrackingCalibrated = false;
   lastGazeSample = null;
@@ -634,13 +619,83 @@ function resetEyeTrackingUiOff() {
 const WEBGAZER_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/webgazer@2.1.0/dist/webgazer.min.js";
 let webgazerLoadPromise = null;
 
-/** Pin WebGazer’s webcam + face mesh overlay to the top-right; keep wireframe visible. */
+/**
+ * WebGazer’s showVideoPreview(true) calls showFaceOverlay(val && params.showFaceOverlay).
+ * Default params leave showFaceOverlay true, so the preview briefly (or persistently if order races)
+ * turns the CLM wire mesh back on — set params false *before* showVideoPreview every time.
+ */
+function disableWebGazerFaceUi() {
+  if (typeof webgazer === "undefined") return;
+  try {
+    if (webgazer.params) {
+      webgazer.params.showFaceOverlay = false;
+      webgazer.params.showFaceFeedbackBox = false;
+    }
+    if (typeof webgazer.showFaceOverlay === "function") webgazer.showFaceOverlay(false);
+    if (typeof webgazer.showFaceFeedbackBox === "function") webgazer.showFaceFeedbackBox(false);
+  } catch (e) {
+    /* ignore */
+  }
+  const fo = document.getElementById("webgazerFaceOverlay");
+  if (fo) {
+    fo.style.setProperty("display", "none", "important");
+    fo.style.setProperty("visibility", "hidden", "important");
+    fo.style.setProperty("opacity", "0", "important");
+    fo.style.setProperty("pointer-events", "none", "important");
+    const ctx = typeof fo.getContext === "function" ? fo.getContext("2d") : null;
+    if (ctx) {
+      const w = fo.width || 300;
+      const h = fo.height || 225;
+      ctx.clearRect(0, 0, w, h);
+    }
+  }
+  const fb = document.getElementById("webgazerFaceFeedbackBox");
+  if (fb) {
+    fb.style.setProperty("display", "none", "important");
+    fb.style.setProperty("visibility", "hidden", "important");
+    fb.style.setProperty("pointer-events", "none", "important");
+  }
+}
+
+/**
+ * WebGazer uses position:absolute on the video/overlay but never sets top/left/right/bottom,
+ * so the static position + px width/height can leave empty space on the right/bottom of the box.
+ * Force full-bleed after every layout/size sync (beats setVideoViewerSize’s inline px on the video).
+ */
+function applyWebGazerPreviewFill() {
+  const pin = (el) => {
+    if (!el) return;
+    el.style.setProperty("position", "absolute", "important");
+    el.style.setProperty("left", "0", "important");
+    el.style.setProperty("top", "0", "important");
+    el.style.setProperty("right", "0", "important");
+    el.style.setProperty("bottom", "0", "important");
+    el.style.setProperty("width", "100%", "important");
+    el.style.setProperty("height", "100%", "important");
+    el.style.setProperty("min-width", "100%", "important");
+    el.style.setProperty("min-height", "100%", "important");
+    el.style.setProperty("max-width", "none", "important");
+    el.style.setProperty("max-height", "none", "important");
+    el.style.setProperty("margin", "0", "important");
+    el.style.setProperty("padding", "0", "important");
+    el.style.setProperty("box-sizing", "border-box", "important");
+    el.style.setProperty("display", "block", "important");
+    el.style.setProperty("object-fit", "cover", "important");
+    el.style.setProperty("object-position", "center center", "important");
+    el.style.setProperty("transform-origin", "center center", "important");
+  };
+  pin(document.getElementById("webgazerVideoFeed"));
+}
+
+/** Pin WebGazer’s webcam to the top-right preview box (face mesh overlay stays off). */
 function layoutWebGazerVideoCorner() {
   let s = document.getElementById("webgazer-preview-corner-style");
   if (!s) {
     s = document.createElement("style");
     s.id = "webgazer-preview-corner-style";
-    s.textContent = `
+    document.head.appendChild(s);
+  }
+  s.textContent = `
 #webgazerVideoContainer {
   position: fixed !important;
   top: 12px !important;
@@ -648,24 +703,79 @@ function layoutWebGazerVideoCorner() {
   left: auto !important;
   bottom: auto !important;
   z-index: 150000 !important;
+  width: 300px !important;
+  height: 225px !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  line-height: 0 !important;
   border-radius: 10px;
   overflow: hidden;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
   background: #0a0a0c;
 }
+#webgazerVideoFeed {
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 100% !important;
+  min-height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+  display: block !important;
+  object-fit: cover !important;
+  object-position: center center !important;
+  transform-origin: center center !important;
+  z-index: 0 !important;
+}
+/* CLM wire mesh — hidden (tracking still runs on the video stream). */
+#webgazerFaceOverlay {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+#webgazerFaceFeedbackBox {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
 `;
-    document.head.appendChild(s);
-  }
   const c = document.getElementById("webgazerVideoContainer");
   if (c) {
     c.style.top = "12px";
     c.style.right = "12px";
     c.style.left = "auto";
     c.style.bottom = "auto";
+    c.style.boxSizing = "border-box";
+    c.style.padding = "0";
+    c.style.margin = "0";
   }
   if (typeof webgazer !== "undefined" && typeof webgazer.setVideoViewerSize === "function") {
     webgazer.setVideoViewerSize(300, 225);
   }
+  disableWebGazerFaceUi();
+  applyWebGazerPreviewFill();
+  requestAnimationFrame(() => {
+    disableWebGazerFaceUi();
+    applyWebGazerPreviewFill();
+  });
+  setTimeout(() => {
+    disableWebGazerFaceUi();
+    applyWebGazerPreviewFill();
+  }, 120);
+  setTimeout(() => {
+    disableWebGazerFaceUi();
+    applyWebGazerPreviewFill();
+  }, 600);
 }
 
 /** Kalman + frequent samples; no CSS transform easing so the dot stays close to WebGazer’s estimate. */
@@ -677,7 +787,10 @@ function applyWebGazerStabilityTuning() {
     }
     if (webgazer.params) {
       webgazer.params.applyKalmanFilter = true;
-      webgazer.params.dataTimestep = 42;
+      /* Slightly snappier internal cadence; pairs better with continuous draw loop while tracking. */
+      webgazer.params.dataTimestep = 28;
+      webgazer.params.showFaceOverlay = false;
+      webgazer.params.showFaceFeedbackBox = false;
     }
   } catch (e) {
     /* ignore */
@@ -745,8 +858,9 @@ async function startEyeTrackingFlow() {
     const begun = webgazer.begin();
     if (begun && typeof begun.then === "function") await begun;
     applyWebGazerStabilityTuning();
+    disableWebGazerFaceUi();
     webgazer.showVideoPreview(true);
-    if (typeof webgazer.showFaceOverlay === "function") webgazer.showFaceOverlay(true);
+    disableWebGazerFaceUi();
     webgazer.showPredictionPoints(true);
     if (webgazer.removeMouseEventListeners) webgazer.removeMouseEventListeners();
     requestAnimationFrame(() => {
@@ -1756,6 +1870,12 @@ function draw() {
     }
   }
   updateGazeStatusDisplay();
+
+  /* WebGazer can re-sync preview DOM after internal ticks; keep mesh off and video pinned. */
+  if (eyeTrackingActive && frameCount % 45 === 0) {
+    disableWebGazerFaceUi();
+    applyWebGazerPreviewFill();
+  }
 
   const att = getAttention();
   const attGlyphs = getGlyphAttention(att);
